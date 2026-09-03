@@ -1,0 +1,35 @@
+services:
+  monkey:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env
+    volumes:
+      - monkey-data:/data
+    depends_on:
+      - gh-proxy
+    networks:
+      - monkey-internal
+    ports:
+      # Only the webhook endpoint should be reachable externally. Use a reverse
+      # proxy that routes ONLY /webhook/github here.
+      - "8000:8000"
+
+  gh-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env
+    environment:
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+      MONKEY_GH_PROXY_HMAC_KEY: ${MONKEY_GH_PROXY_HMAC_KEY}
+    networks:
+      - monkey-internal
+    # gh-proxy exposes NO host port; it only reaches api.github.com.
+
+volumes:
+  monkey-data:
+
+networks:
+  monkey-internal:
+    internal: true

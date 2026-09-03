@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment / secrets - NEVER commit
+.env
+*.env
+!*.env.example
+
+# pi / agent runtime
+.pi/
+
+# OS
+.DS_Store
+Thumbs.db

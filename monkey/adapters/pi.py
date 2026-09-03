@@ -236,12 +236,13 @@ class _SpawnedPi:
     def __init__(self, binary: str, args: list[str], *, cwd: Path | None = None) -> None:  # noqa: ANN101
         import subprocess
 
-        # Scrub secrets so the agent can never read the token or the proxy HMAC
-        # key (which it could use to sign its own requests to gh-proxy).
+        # Scrub secrets so the agent can never read the GitHub token, webhook
+        # secret, or any internal MONKEY_* configuration (e.g. the gh-proxy
+        # HMAC key, which it could use to sign its own requests to gh-proxy).
         env = {
             k: v
             for k, v in os.environ.items()
-            if k not in ("GITHUB_TOKEN", "MONKEY_GH_PROXY_HMAC_KEY")
+            if not k.startswith(("GITHUB_", "MONKEY_"))
         }
         self.proc = subprocess.Popen(
             [binary, *args],

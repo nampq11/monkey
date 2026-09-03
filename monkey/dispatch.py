@@ -30,6 +30,10 @@ class Task:
 
 def classify_and_build_task(event_type: str, payload: dict, settings) -> Task | None:
     """Return a Task for the engine, or None to skip (no work)."""
+    action = payload.get("action")
+    if action in ("closed", "deleted", "locked"):
+        return None
+
     issue = payload.get("issue") or payload.get("pull_request") or {}
     title = issue.get("title", "")
     body = issue.get("body") or ""

@@ -57,3 +57,11 @@ def test_fix_prompt_contains_required_sections():
     prompt = task.prompt
     for section in ("## Repro", "## Cause", "## Fix", "## Verification"):
         assert section in prompt
+
+
+def test_closed_action_is_skipped():
+    settings = _Settings()
+    payload = _payload("App crashes", "boost crash error")
+    payload["action"] = "closed"
+    task = classify_and_build_task("issues", payload, settings)
+    assert task is None

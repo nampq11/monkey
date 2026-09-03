@@ -175,6 +175,9 @@ impl Settings {
         if self.repo_allowlist.is_empty() {
             return Err("REPO_ALLOWLIST is required".into());
         }
+        if self.max_concurrency == 0 {
+            return Err("MONKEY_MAX_CONCURRENCY must be greater than zero".into());
+        }
 
         Ok(())
     }

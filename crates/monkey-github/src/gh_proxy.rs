@@ -13,6 +13,8 @@ use std::process::Command;
 use monkey_core::hmac_auth::verify_internal_signature;
 
 const API: &str = "https://api.github.com";
+const CREDENTIAL_HELPER: &str =
+    "!f() { echo username=x-access-token; echo password=$GIT_TOKEN; }; f";
 
 #[derive(Clone)]
 pub struct GhProxyState {
@@ -182,37 +184,35 @@ async fn create_ref(
 }
 
 async fn git_push(State(state): State<GhProxyState>, Json(body): Json<Value>) -> Response {
-    let worktree = body.get("worktree").and_then(|v| v.as_str());
-    let branch = body.get("branch").and_then(|v| v.as_str());
-    let repo = body.get("repo").and_then(|v| v.as_str());
-
-    if worktree.is_none() || branch.is_none() || repo.is_none() {
+    let (Some(worktree), Some(branch), Some(repo)) = (
+        body.get("worktree").and_then(|value| value.as_str()),
+        body.get("branch").and_then(|value| value.as_str()),
+        body.get("repo").and_then(|value| value.as_str()),
+    ) else {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(json!({ "detail": "worktree, branch, and repo required" })),
         )
             .into_response();
-    }
+    };
 
-    let worktree = worktree.unwrap();
-    let branch = branch.unwrap();
-    let repo = repo.unwrap();
-
-    let remote = format!(
-        "https://x-access-token:{}@github.com/{}.git",
-        state.github_token, repo
-    );
+    let remote = format!("https://github.com/{}.git", repo);
 
     let output = Command::new("git")
         .args([
             "-C",
             worktree,
+            "-c",
+            "credential.helper=",
+            "-c",
+            CREDENTIAL_HELPER,
             "push",
             "-f",
             &remote,
             &format!("HEAD:{}", branch),
         ])
         .env("GIT_TOKEN", &state.github_token)
+        .env("GIT_TERMINAL_PROMPT", "0")
         .output();
 
     match output {
@@ -268,12 +268,47 @@ async fn call_gh(
         Ok(resp) => {
             let status = StatusCode::from_u16(resp.status().as_u16())
                 .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-            let parsed_json: Value = resp
-                .json()
-                .await
-                .unwrap_or_else(|_| json!({ "error": "failed to parse json response" }));
+            let upstream_failed = status.is_client_error() || status.is_server_error();
+            let response_text = match resp.text().await {
+                Ok(text) => text,
+                Err(error) => {
+                    let response_status = if upstream_failed {
+                        status
+                    } else {
+                        StatusCode::BAD_GATEWAY
+                    };
+                    return (
+                        response_status,
+                        Json(json!({
+                            "error": true,
+                            "status": status.as_u16(),
+                            "detail": format!("failed to read GitHub response: {}", error)
+                        })),
+                    )
+                        .into_response();
+                }
+            };
+            let parsed_json = match serde_json::from_str::<Value>(&response_text) {
+                Ok(value) => value,
+                Err(error) => {
+                    let response_status = if upstream_failed {
+                        status
+                    } else {
+                        StatusCode::BAD_GATEWAY
+                    };
+                    return (
+                        response_status,
+                        Json(json!({
+                            "error": true,
+                            "status": status.as_u16(),
+                            "detail": format!("malformed GitHub JSON response: {}", error)
+                        })),
+                    )
+                        .into_response();
+                }
+            };
 
-            if status.is_client_error() || status.is_server_error() {
+            if upstream_failed {
                 (
                     status,
                     Json(json!({

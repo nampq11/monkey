@@ -67,7 +67,7 @@ pub async fn open_pr_if_gated(
     };
 
     if !has_required_headers(body, repo_ref.number) {
-        let _ = proxy.add_issue_comment(&ensure_comment(body)).await;
+        proxy.add_issue_comment(&ensure_comment(body)).await?;
         return Ok(json!({
             "action": "comment_fallback",
             "reason": "missing_required_headers"
@@ -76,7 +76,7 @@ pub async fn open_pr_if_gated(
 
     let branch = &outcome.branch;
     if branch.is_empty() {
-        let _ = proxy.add_issue_comment(&ensure_comment(body)).await;
+        proxy.add_issue_comment(&ensure_comment(body)).await?;
         return Ok(json!({
             "action": "comment_fallback",
             "reason": "missing_branch"
@@ -87,11 +87,7 @@ pub async fn open_pr_if_gated(
     proxy.push(worktree, branch).await?;
 
     let first_line = outcome.summary.lines().next().unwrap_or("");
-    let title = if first_line.len() > 120 {
-        &first_line[..120]
-    } else {
-        first_line
-    };
+    let title = truncate_utf8(first_line, 120);
 
     let pr = proxy
         .open_pull_request(json!({
@@ -126,6 +122,17 @@ pub fn ensure_comment(text: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+fn truncate_utf8(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+
+    text.char_indices()
+        .take_while(|(index, character)| index + character.len_utf8() <= max_bytes)
+        .map(|(_, character)| character)
+        .collect()
 }
 
 pub fn gate_pre_push(worktree: &Path, _branch: &str) -> Result<(), String> {

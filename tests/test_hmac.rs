@@ -1,4 +1,7 @@
-use monkey::hmac_auth::{HmacError, hmac_sign, verify_github_signature, verify_internal_signature};
+use monkey::hmac_auth::{
+    HmacError, hmac_sign, hmac_sign_with_timestamp, verify_github_signature,
+    verify_internal_signature,
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const SECRET: &str = "test-secret";
@@ -52,7 +55,7 @@ fn test_internal_signature_within_skew_passes() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
-    let sig = hmac_sign(SECRET, BODY);
+    let sig = hmac_sign_with_timestamp(SECRET, BODY, ts);
     assert!(verify_internal_signature(SECRET, BODY, Some(&sig), Some(&ts.to_string()), 30).is_ok());
 }
 
@@ -63,9 +66,51 @@ fn test_internal_signature_replay_rejected() {
         .unwrap()
         .as_secs() as i64
         - 100; // outside +-30s skew
-    let sig = hmac_sign(SECRET, BODY);
+    let sig = hmac_sign_with_timestamp(SECRET, BODY, ts);
     assert_eq!(
         verify_internal_signature(SECRET, BODY, Some(&sig), Some(&ts.to_string()), 30),
         Err(HmacError::TimestampSkew)
+    );
+}
+
+#[test]
+fn test_internal_signature_rejects_fresh_timestamp_replay() {
+    let old_timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+        - 3600;
+    let fresh_timestamp = old_timestamp + 3600;
+    let captured_signature = hmac_sign_with_timestamp(SECRET, BODY, old_timestamp);
+
+    assert_eq!(
+        verify_internal_signature(
+            SECRET,
+            BODY,
+            Some(&captured_signature),
+            Some(&fresh_timestamp.to_string()),
+            30,
+        ),
+        Err(HmacError::SignatureMismatch)
+    );
+}
+
+#[test]
+fn test_internal_signature_rejects_unbound_signature() {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let unbound_signature = hmac_sign(SECRET, BODY);
+
+    assert_eq!(
+        verify_internal_signature(
+            SECRET,
+            BODY,
+            Some(&unbound_signature),
+            Some(&timestamp.to_string()),
+            30,
+        ),
+        Err(HmacError::SignatureMismatch)
     );
 }

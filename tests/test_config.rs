@@ -78,3 +78,10 @@ fn test_missing_required_fields_fails() {
     s.repo_allowlist = "".to_string();
     assert!(s.validate().is_err());
 }
+
+#[test]
+fn test_zero_concurrency_fails() {
+    let mut settings = base_settings();
+    settings.max_concurrency = 0;
+    assert!(settings.validate().is_err());
+}

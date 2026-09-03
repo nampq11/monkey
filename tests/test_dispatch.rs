@@ -9,6 +9,7 @@ fn make_payload(title: &str, body: &str, labels: Option<Vec<&str>>) -> serde_jso
         .collect();
 
     json!({
+        "action": "opened",
         "issue": {
             "title": title,
             "body": body,
@@ -62,4 +63,23 @@ fn test_fix_prompt_contains_required_sections() {
     for section in ["## Repro", "## Cause", "## Fix", "## Verification"] {
         assert!(prompt.contains(section));
     }
+}
+
+#[test]
+fn test_pull_request_event_is_skipped() {
+    let payload = make_payload("Bug in pull request", "crash", None);
+    assert!(classify_and_build_task("pull_request", &payload).is_none());
+}
+
+#[test]
+fn test_unsupported_action_is_skipped() {
+    let mut payload = make_payload("App crashes", "bug", None);
+    payload["action"] = json!("closed");
+    assert!(classify_and_build_task("issues", &payload).is_none());
+}
+
+#[test]
+fn test_missing_action_is_skipped() {
+    let payload = json!({"issue": {"title": "App crashes", "body": "bug"}});
+    assert!(classify_and_build_task("issues", &payload).is_none());
 }

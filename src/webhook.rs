@@ -111,6 +111,28 @@ async fn github_webhook(
             .into_response();
     }
 
+    let sender = payload
+        .get("sender")
+        .and_then(|sender| sender.get("login"))
+        .and_then(|login| login.as_str())
+        .unwrap_or("");
+    let sender_type = payload
+        .get("sender")
+        .and_then(|sender| sender.get("type"))
+        .and_then(|sender_type| sender_type.as_str())
+        .unwrap_or("");
+    if (!state.settings.bot_login.is_empty()
+        && sender.eq_ignore_ascii_case(&state.settings.bot_login))
+        || sender.ends_with("[bot]")
+        || sender_type.eq_ignore_ascii_case("bot")
+    {
+        return (
+            StatusCode::OK,
+            Json(json!({ "ok": true, "skipped": "bot-authored event" })),
+        )
+            .into_response();
+    }
+
     let body_str = String::from_utf8_lossy(&body);
     let is_new =
         match state

@@ -117,3 +117,53 @@ async fn test_webhook_valid_signature_enqueues_event() {
     assert_eq!(pending[0].repo, "widget");
     assert_eq!(pending[0].number, 42);
 }
+
+#[tokio::test]
+async fn test_webhook_skips_configured_bot_sender() {
+    let (app, store, _dir) = setup_webhook_app();
+    let payload = json!({
+        "action": "opened",
+        "sender": {"login": "MONKEY"},
+        "repository": {"name": "widget", "owner": {"login": "acme"}},
+        "issue": {"number": 42, "title": "Bug", "body": "crash"}
+    });
+    let body = serde_json::to_vec(&payload).unwrap();
+    let signature = hmac_sign(SECRET, &body);
+    let request = Request::builder()
+        .method("POST")
+        .uri("/webhook/github")
+        .header("x-hub-signature-256", signature)
+        .header("x-github-delivery", "bot-delivery")
+        .header("x-github-event", "issues")
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(store.get_pending(10).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_webhook_skips_github_bot_sender() {
+    let (app, store, _dir) = setup_webhook_app();
+    let payload = json!({
+        "action": "opened",
+        "sender": {"login": "dependabot[bot]", "type": "Bot"},
+        "repository": {"name": "widget", "owner": {"login": "acme"}},
+        "issue": {"number": 43, "title": "Bug", "body": "crash"}
+    });
+    let body = serde_json::to_vec(&payload).unwrap();
+    let signature = hmac_sign(SECRET, &body);
+    let request = Request::builder()
+        .method("POST")
+        .uri("/webhook/github")
+        .header("x-hub-signature-256", signature)
+        .header("x-github-delivery", "bot-delivery-2")
+        .header("x-github-event", "issues")
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(store.get_pending(10).unwrap().is_empty());
+}

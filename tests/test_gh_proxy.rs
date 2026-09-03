@@ -2,7 +2,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
 use monkey::gh_proxy::{GhProxyState, app};
-use monkey::hmac_auth::hmac_sign;
+use monkey::hmac_auth::hmac_sign_with_timestamp;
 use serde_json::json;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tower::ServiceExt;
@@ -26,12 +26,12 @@ fn signed_request(
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
-        .as_secs()
-        .to_string();
+        .as_secs() as i64;
     let sig = bad_sig
         .map(|s| s.to_string())
-        .unwrap_or_else(|| hmac_sign(HMAC_KEY, &serialized));
-    let ts_hdr = bad_ts.unwrap_or(&ts);
+        .unwrap_or_else(|| hmac_sign_with_timestamp(HMAC_KEY, &serialized, ts));
+    let ts_string = ts.to_string();
+    let ts_hdr = bad_ts.unwrap_or(&ts_string);
 
     Request::builder()
         .method(method)

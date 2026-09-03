@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 
 use monkey_core::config::Settings;
 use monkey_core::db::{Event, Store};
@@ -17,7 +17,13 @@ pub async fn worker_loop<A: EngineAdapter + 'static>(
     adapter: Arc<A>,
     settings: Settings,
 ) {
+    if settings.max_concurrency == 0 {
+        tracing::error!("worker cannot start with max_concurrency=0");
+        return;
+    }
+
     let inflight: Arc<Mutex<HashSet<(String, String, i64)>>> = Arc::new(Mutex::new(HashSet::new()));
+    let concurrency = Arc::new(Semaphore::new(settings.max_concurrency));
 
     loop {
         let rows = match store.get_pending(50) {
@@ -30,6 +36,10 @@ pub async fn worker_loop<A: EngineAdapter + 'static>(
         };
 
         for row in rows {
+            let permit = match concurrency.clone().try_acquire_owned() {
+                Ok(permit) => permit,
+                Err(_) => break,
+            };
             let key = (row.owner.clone(), row.repo.clone(), row.number);
             {
                 let mut lock = inflight.lock().await;
@@ -56,12 +66,19 @@ pub async fn worker_loop<A: EngineAdapter + 'static>(
             let key_clone = key.clone();
 
             tokio::spawn(async move {
+                let _permit = permit;
                 let delivery_id = row.delivery_id.clone();
                 if let Err(e) =
                     handle_event(&store_clone, &*adapter_clone, &row, &settings_clone).await
                 {
                     tracing::error!("failed handling event {}: {}", delivery_id, e);
-                    let _ = store_clone.fail(&delivery_id);
+                    if let Err(fail_error) = store_clone.fail(&delivery_id) {
+                        tracing::error!(
+                            "failed marking event {} as failed: {}",
+                            delivery_id,
+                            fail_error
+                        );
+                    }
                 }
                 let mut lock = inflight_clone.lock().await;
                 lock.remove(&key_clone);
@@ -86,6 +103,17 @@ async fn handle_event<A: EngineAdapter + ?Sized>(
         number: row.number,
     };
 
+    // Classify before cloning so ignored webhook actions never start sandbox work.
+    let task = match classify_and_build_task(&row.event_type, &payload) {
+        Some(task) => task,
+        None => {
+            store
+                .done(&row.delivery_id, None)
+                .map_err(|e| format!("failed to mark skipped event done: {}", e))?;
+            return Ok(());
+        }
+    };
+
     let workspaces_root = Path::new(&settings.workspaces_root);
     let repo_url = format!(
         "https://github.com/{}/{}.git",
@@ -103,16 +131,7 @@ async fn handle_event<A: EngineAdapter + ?Sized>(
     )
     .map_err(|e| format!("sandbox error: {}", e))?;
 
-    // 2. Classify and build task
-    let task = match classify_and_build_task(&row.event_type, &payload) {
-        Some(t) => t,
-        None => {
-            let _ = store.done(&row.delivery_id, None);
-            return Ok(());
-        }
-    };
-
-    // 3. Drive engine adapter
+    // 2. Drive engine adapter
     let session_dir = PathBuf::from(&settings.session_dir).join(format!(
         "{}__{}__{}",
         repo_ref.owner, repo_ref.repo, repo_ref.number
@@ -130,15 +149,17 @@ async fn handle_event<A: EngineAdapter + ?Sized>(
     };
     let outcome = adapter.run(params).await?;
 
-    // 4. Persist outcome
-    write_outcome(&session_dir, &outcome, task.kind);
+    // 3. Persist outcome
+    write_outcome(&session_dir, &outcome, task.kind)?;
 
-    // 5. Write back to GitHub
-    let _ = write_back(&outcome, task.kind, &repo_ref, store, &worktree, settings).await;
+    // 4. Write back to GitHub
+    write_back(&outcome, task.kind, &repo_ref, store, &worktree, settings).await?;
 
-    let _ = store.done(&row.delivery_id, Some(&session_dir.to_string_lossy()));
+    store
+        .done(&row.delivery_id, Some(&session_dir.to_string_lossy()))
+        .map_err(|e| format!("failed to mark event done: {}", e))?;
 
-    // 6. Cleanup workspace
+    // 5. Cleanup workspace
     cleanup_workspace(
         workspaces_root,
         &repo_ref.owner,
@@ -149,8 +170,9 @@ async fn handle_event<A: EngineAdapter + ?Sized>(
     Ok(())
 }
 
-fn write_outcome(session_dir: &Path, outcome: &Outcome, kind: TaskKind) {
-    let _ = std::fs::create_dir_all(session_dir);
+fn write_outcome(session_dir: &Path, outcome: &Outcome, kind: TaskKind) -> Result<(), String> {
+    std::fs::create_dir_all(session_dir)
+        .map_err(|e| format!("failed to create session artifact directory: {}", e))?;
     let artifact = json!({
         "kind": kind,
         "status": outcome.status,
@@ -159,8 +181,8 @@ fn write_outcome(session_dir: &Path, outcome: &Outcome, kind: TaskKind) {
         "comment": outcome.comment,
         "branch": outcome.branch,
     });
-    let _ = std::fs::write(
-        session_dir.join("outcome.json"),
-        serde_json::to_string_pretty(&artifact).unwrap_or_default(),
-    );
+    let serialized = serde_json::to_string_pretty(&artifact)
+        .map_err(|e| format!("failed to serialize outcome artifact: {}", e))?;
+    std::fs::write(session_dir.join("outcome.json"), serialized)
+        .map_err(|e| format!("failed to write outcome artifact: {}", e))
 }

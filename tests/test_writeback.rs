@@ -58,6 +58,16 @@ fn test_rejects_reference_to_a_different_issue() {
 
 #[tokio::test]
 async fn test_open_pr_requires_a_real_branch() {
+    let app = axum::Router::new().route(
+        "/issues/acme/widget/123/comment",
+        axum::routing::post(|| async { axum::Json(serde_json::json!({"ok": true})) }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("test.db");
     let store = Store::new(&db_path).unwrap();
@@ -66,7 +76,7 @@ async fn test_open_pr_requires_a_real_branch() {
         repo: "widget".into(),
         number: 123,
     };
-    let proxy = GHProxy::new("http://127.0.0.1:9999", "key", store, &repo_ref);
+    let proxy = GHProxy::new(&format!("http://{}", address), "key", store, &repo_ref);
 
     let outcome = Outcome {
         pr_body: GOOD_BODY.to_string(),
@@ -135,9 +145,10 @@ async fn test_open_pr_pushes_branch_then_opens() {
     let proxy = GHProxy::new(&format!("http://{}", addr), "key", store, &repo_ref);
 
     let branch = "farm/abc1234/widget";
+    let summary = format!("{}é", "a".repeat(119));
     let outcome = Outcome {
         pr_body: GOOD_BODY.to_string(),
-        summary: "Fix the bug".to_string(),
+        summary,
         branch: branch.to_string(),
         ..Default::default()
     };
@@ -151,5 +162,5 @@ async fn test_open_pr_pushes_branch_then_opens() {
     assert_eq!(pushed.lock().unwrap()[0]["branch"], branch);
     assert_eq!(prs.lock().unwrap().len(), 1);
     assert_eq!(prs.lock().unwrap()[0]["head"], branch);
-    assert_eq!(prs.lock().unwrap()[0]["title"], "Fix the bug");
+    assert_eq!(prs.lock().unwrap()[0]["title"], "a".repeat(119));
 }

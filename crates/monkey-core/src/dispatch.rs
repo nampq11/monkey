@@ -33,7 +33,11 @@ pub struct Task {
     pub autoclose: bool,
 }
 
-pub fn classify_and_build_task(_event_type: &str, payload: &Value) -> Option<Task> {
+pub fn classify_and_build_task(event_type: &str, payload: &Value) -> Option<Task> {
+    let action = payload.get("action").and_then(|value| value.as_str());
+    if !is_supported_event_action(event_type, action) {
+        return None;
+    }
     let empty_obj = Value::Object(serde_json::Map::new());
     let issue = payload
         .get("issue")
@@ -214,6 +218,16 @@ pub fn enhancement_prompt(title: &str, body: &str) -> String {
     )
 }
 
+fn is_supported_event_action(event_type: &str, action: Option<&str>) -> bool {
+    matches!(
+        (event_type, action),
+        (
+            "issues",
+            Some("opened" | "edited" | "labeled" | "unlabeled" | "reopened")
+        ) | ("issue_comment", Some("created"))
+            | ("pull_request_review", Some("submitted"))
+    )
+}
 fn has_any(text: &str, keywords: &[&str]) -> bool {
     keywords.iter().any(|k| text.contains(k))
 }

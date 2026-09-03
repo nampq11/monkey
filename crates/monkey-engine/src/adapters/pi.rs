@@ -51,7 +51,7 @@ impl EngineAdapter for PiAdapter {
 
         // 2. Drain until agent_settled
         let mut raw_events = Vec::new();
-        drain_until_settled(&mut lines, &mut raw_events, params.timeout).await;
+        drain_until_settled(&mut lines, &mut raw_events, params.timeout).await?;
 
         // 3. Get session stats
         let stats_req = json!({
@@ -59,7 +59,7 @@ impl EngineAdapter for PiAdapter {
             "id": "stats-1"
         });
         send_line(&mut stdin, &stats_req).await?;
-        let stats_resp = wait_for_response(&mut lines, "stats-1", Duration::from_secs(10)).await;
+        let stats_resp = wait_for_response(&mut lines, "stats-1", Duration::from_secs(10)).await?;
 
         // 4. Get last assistant text
         let text_req = json!({
@@ -67,7 +67,7 @@ impl EngineAdapter for PiAdapter {
             "id": "text-1"
         });
         send_line(&mut stdin, &text_req).await?;
-        let text_resp = wait_for_response(&mut lines, "text-1", Duration::from_secs(10)).await;
+        let text_resp = wait_for_response(&mut lines, "text-1", Duration::from_secs(10)).await?;
 
         // Clean up process
         let _ = child.kill().await;
@@ -110,7 +110,7 @@ impl EngineAdapter for PiAdapter {
 
         // 3. Drain until settled
         let mut raw_events = Vec::new();
-        drain_until_settled(&mut lines, &mut raw_events, params.timeout).await;
+        drain_until_settled(&mut lines, &mut raw_events, params.timeout).await?;
 
         // 4. Get stats and last text
         let stats_req = json!({
@@ -118,14 +118,14 @@ impl EngineAdapter for PiAdapter {
             "id": "stats-1"
         });
         send_line(&mut stdin, &stats_req).await?;
-        let stats_resp = wait_for_response(&mut lines, "stats-1", Duration::from_secs(10)).await;
+        let stats_resp = wait_for_response(&mut lines, "stats-1", Duration::from_secs(10)).await?;
 
         let text_req = json!({
             "type": "get_last_assistant_text",
             "id": "text-1"
         });
         send_line(&mut stdin, &text_req).await?;
-        let text_resp = wait_for_response(&mut lines, "text-1", Duration::from_secs(10)).await;
+        let text_resp = wait_for_response(&mut lines, "text-1", Duration::from_secs(10)).await?;
 
         let _ = child.kill().await;
 
@@ -160,22 +160,26 @@ async fn build_outcome(
     worktree: &Path,
     session_dir: &Path,
     raw_events: Vec<Value>,
-    stats_resp: &Option<Value>,
-    text_resp: &Option<Value>,
+    stats_resp: &Value,
+    text_resp: &Value,
 ) -> Result<Outcome, String> {
-    let session_file = stats_resp
-        .as_ref()
-        .and_then(|r| r.get("data"))
-        .and_then(|d| d.get("sessionFile"))
-        .and_then(|s| s.as_str())
+    let stats_data = stats_resp
+        .get("data")
+        .and_then(Value::as_object)
+        .ok_or("pi stats response missing data object")?;
+    let session_file = stats_data
+        .get("sessionFile")
+        .and_then(|session_file| session_file.as_str())
         .map(PathBuf::from);
 
-    let last_text = text_resp
-        .as_ref()
-        .and_then(|r| r.get("data"))
-        .and_then(|d| d.get("text"))
-        .and_then(|t| t.as_str())
-        .unwrap_or("")
+    let text_data = text_resp
+        .get("data")
+        .and_then(Value::as_object)
+        .ok_or("pi text response missing data object")?;
+    let last_text = text_data
+        .get("text")
+        .and_then(|text| text.as_str())
+        .ok_or("pi text response missing data.text")?
         .to_string();
 
     let branch = read_branch(worktree).await;
@@ -222,10 +226,12 @@ fn spawn_pi(binary: &str, params: &RunParams<'_>) -> Result<tokio::process::Chil
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::null());
+    cmd.stderr(Stdio::null());
+    cmd.kill_on_drop(true);
 
-    // Scrub secrets from env
+    // Keep internal configuration and GitHub credentials out of prompt-injected code.
     for (k, _) in std::env::vars() {
-        if k == "GITHUB_TOKEN" || k == "MONKEY_GH_PROXY_HMAC_KEY" {
+        if k.starts_with("GITHUB_") || k.starts_with("MONKEY_") {
             cmd.env_remove(&k);
         }
     }
@@ -251,38 +257,47 @@ async fn drain_until_settled(
     lines: &mut FramedRead<tokio::process::ChildStdout, LinesCodec>,
     raw_events: &mut Vec<Value>,
     timeout: Duration,
-) {
+) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
-            break;
+            return Err("pi timed out waiting for agent_settled".to_string());
         }
 
-        match tokio::time::timeout(remaining, lines.next()).await {
-            Ok(Some(Ok(line))) => {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
-                    let is_settled =
-                        val.get("type").and_then(|t| t.as_str()) == Some("agent_settled");
-                    raw_events.push(val);
-                    if is_settled {
-                        // Quick drain
-                        while let Ok(Some(Ok(extra))) =
-                            tokio::time::timeout(Duration::from_millis(50), lines.next()).await
-                        {
-                            if let Ok(extra_val) = serde_json::from_str::<Value>(extra.trim()) {
-                                raw_events.push(extra_val);
-                            }
+        let line = match tokio::time::timeout(remaining, lines.next()).await {
+            Ok(Some(Ok(line))) => line,
+            Ok(Some(Err(error))) => return Err(format!("failed reading pi output: {}", error)),
+            Ok(None) => return Err("pi exited before agent_settled".to_string()),
+            Err(_) => return Err("pi timed out waiting for agent_settled".to_string()),
+        };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let val = serde_json::from_str::<Value>(trimmed)
+            .map_err(|error| format!("malformed pi event: {}", error))?;
+        let is_settled = val.get("type").and_then(|value| value.as_str()) == Some("agent_settled");
+        raw_events.push(val);
+        if is_settled {
+            loop {
+                match tokio::time::timeout(Duration::from_millis(50), lines.next()).await {
+                    Ok(Some(Ok(extra))) => {
+                        let trimmed = extra.trim();
+                        if trimmed.is_empty() {
+                            continue;
                         }
-                        break;
+                        let extra_value = serde_json::from_str::<Value>(trimmed)
+                            .map_err(|error| format!("malformed pi event: {}", error))?;
+                        raw_events.push(extra_value);
                     }
+                    Ok(Some(Err(error))) => {
+                        return Err(format!("failed reading pi output: {}", error));
+                    }
+                    Ok(None) | Err(_) => break,
                 }
             }
-            _ => break,
+            return Ok(());
         }
     }
 }
@@ -291,24 +306,30 @@ async fn wait_for_response(
     lines: &mut FramedRead<tokio::process::ChildStdout, LinesCodec>,
     req_id: &str,
     timeout: Duration,
-) -> Option<Value> {
+) -> Result<Value, String> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
-            return None;
+            return Err(format!("timed out waiting for pi response {}", req_id));
         }
 
-        match tokio::time::timeout(remaining, lines.next()).await {
-            Ok(Some(Ok(line))) => {
-                if let Ok(val) = serde_json::from_str::<Value>(line.trim())
-                    && val.get("type").and_then(|t| t.as_str()) == Some("response")
-                    && val.get("id").and_then(|i| i.as_str()) == Some(req_id)
-                {
-                    return Some(val);
-                }
-            }
-            _ => return None,
+        let line = match tokio::time::timeout(remaining, lines.next()).await {
+            Ok(Some(Ok(line))) => line,
+            Ok(Some(Err(error))) => return Err(format!("failed reading pi output: {}", error)),
+            Ok(None) => return Err(format!("pi exited before response {}", req_id)),
+            Err(_) => return Err(format!("timed out waiting for pi response {}", req_id)),
+        };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let val = serde_json::from_str::<Value>(trimmed)
+            .map_err(|error| format!("malformed pi response: {}", error))?;
+        if val.get("type").and_then(|value| value.as_str()) == Some("response")
+            && val.get("id").and_then(|value| value.as_str()) == Some(req_id)
+        {
+            return Ok(val);
         }
     }
 }

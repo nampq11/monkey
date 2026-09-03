@@ -36,10 +36,10 @@ def client():
         yield c
 
 
-def _signed_post(client, path: str, body: dict, *, bad_sig: str | None = None):
+def _signed_post(client, path: str, body: dict, *, bad_sig: str | None = None, ts: int | None = None):
     data = json.dumps(body).encode()
-    ts = int(time.time())
-    sig = bad_sig if bad_sig is not None else hmac_sign(HMAC_KEY, data)
+    ts = int(time.time()) if ts is None else ts
+    sig = bad_sig if bad_sig is not None else hmac_sign(HMAC_KEY, data, ts)
     return client.post(
         path,
         content=data,
@@ -76,13 +76,14 @@ def test_bad_signature_is_rejected(client):
 
 def test_invalid_timestamp_is_rejected(client):
     data = json.dumps({"body": "hi"}).encode()
+    stale_ts = int(time.time()) - 300
     resp = client.post(
         "/issues/acme/widget/1/comment",
         content=data,
         headers={
             "Content-Type": "application/json",
-            "x-monkey-sig": hmac_sign(HMAC_KEY, data),
-            "x-monkey-ts": str(int(time.time()) - 300),
+            "x-monkey-sig": hmac_sign(HMAC_KEY, data, stale_ts),
+            "x-monkey-ts": str(stale_ts),
         },
     )
     assert resp.status_code == 401
@@ -138,3 +139,20 @@ def test_git_push_accepts_valid_fields(client, monkeypatch):
     # The remote must embed the validated repo, not raise KeyError on it.
     # args: ["git","-C",worktree,"push","-f",remote,"HEAD:branch"]
     assert calls["args"][5] == "https://x-access-token:test-gh-proxy-token@github.com/acme/widget.git"
+
+
+def test_replayed_signature_with_fresh_timestamp_is_rejected(client):
+    """Replaying a captured (body, sig) with a refreshed x-monkey-ts inside the
+    skew window must be rejected (401): the timestamp is bound into the MAC."""
+    data = json.dumps({"body": "hi"}).encode()
+    captured_sig = hmac_sign(HMAC_KEY, data, int(time.time()) - 5)
+    resp = client.post(
+        "/issues/acme/widget/1/comment",
+        content=data,
+        headers={
+            "Content-Type": "application/json",
+            "x-monkey-sig": captured_sig,
+            "x-monkey-ts": str(int(time.time())),  # attacker-refreshed timestamp
+        },
+    )
+    assert resp.status_code == 401

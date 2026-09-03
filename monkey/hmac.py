@@ -45,8 +45,16 @@ def verify_github_signature(
         raise BadSignature("signature mismatch")
 
 
-def hmac_sign(secret: str, body: bytes) -> str:
-    """Produce an X-Hub-Signature-256 value for a given body (for tests / proxy)."""
+def hmac_sign(secret: str, body: bytes, timestamp: int | None = None) -> str:
+    """Produce an X-Hub-Signature-256 value for a given body (for tests / proxy).
+
+    When a timestamp is given it is bound into the signed payload as
+    ``"{timestamp}:{body}"`` so a captured signature cannot be replayed with a
+    refreshed x-monkey-ts header. With ``timestamp=None`` (GitHub webhooks) the
+    raw body is signed, unchanged.
+    """
+    if timestamp is not None:
+        body = f"{timestamp}:{body.decode()}".encode()
     return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
@@ -77,7 +85,9 @@ def verify_internal_signature(
     if abs(now - ts) > skew_seconds:
         raise BadSignature("timestamp outside skew window")
 
-    expected = hmac.new(key.encode(), body, hashlib.sha256).hexdigest()
+    # The timestamp must be authenticated too, otherwise a captured signature
+    # could be replayed forever by refreshing x-monkey-ts inside the window.
+    expected = hmac.new(key.encode(), f"{ts}:{body.decode()}".encode(), hashlib.sha256).hexdigest()
     provided = signature_header.removeprefix("sha256=")
     if not _constant_time_equal(expected, provided):
         raise BadSignature("signature mismatch")

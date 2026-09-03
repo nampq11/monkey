@@ -11,10 +11,18 @@ services:
       GITHUB_TOKEN: ""
     volumes:
       - monkey-data:/data
+      # pi reads ~/.pi/agent/models.json for providers/api keys (chosen: mount
+      # host config so the container can call the LLM). Keys/creds live on the
+      # host; only the monkey service (which spawns pi) needs this.
+      - /home/nampq/.pi/agent/models.json:/root/.pi/agent/models.json:ro
+      # pi reads ~/.pi/agent/auth.json for OAuth/API keys (zai, openai-codex,
+      # antigravity, etc.). Mounted read-only so the engine can call providers.
+      - /home/nampq/.pi/agent/auth.json:/root/.pi/agent/auth.json:ro
     depends_on:
       - gh-proxy
     networks:
       - monkey-internal
+      - egress
     ports:
       # Only the webhook endpoint should be reachable externally. Use a reverse
       # proxy that routes ONLY /webhook/github here.
@@ -24,6 +32,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    env_file: .env
     environment:
       GITHUB_TOKEN: ${GITHUB_TOKEN}
       MONKEY_GH_PROXY_HMAC_KEY: ${MONKEY_GH_PROXY_HMAC_KEY}

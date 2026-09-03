@@ -35,10 +35,14 @@ class GHProxy:
         headers = {
             "x-monkey-sig": sig,
             "x-monkey-ts": str(ts),
+            "content-type": "application/json",
         }
+        # Send the EXACT bytes we signed (content=), not json=; httpx may
+        # re-serialize json= differently, breaking the HMAC verification on
+        # gh-proxy which re-hashes the raw request body.
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.request(
-                method, self.base + path, headers=headers, json=payload_json
+                method, self.base + path, headers=headers, content=serialized
             )
         result = _redact(resp.text)
         self.store.audit_tool_call(self.owner, self.repo, self.number, path, _redact(serialized.decode()), result)

@@ -58,7 +58,7 @@ class PiAdapter(EngineAdapter):
             args += ["--provider", provider]
         args += ["--thinking", thinking]
 
-        with _SpawnedPi(self.binary, args) as proc:
+        with _SpawnedPi(self.binary, args, cwd=worktree) as proc:
             self._prompt(proc, task)
             events = self._drain_until_settled(proc, timeout_seconds)
             running = self._get_running_session(proc)
@@ -85,7 +85,7 @@ class PiAdapter(EngineAdapter):
             args += ["--provider", provider]
         args += ["--thinking", thinking]
 
-        with _SpawnedPi(self.binary, args) as proc:
+        with _SpawnedPi(self.binary, args, cwd=worktree) as proc:
             if session_path is not None:
                 self._switch_session(proc, session_path)
             self._prompt(proc, follow_up)
@@ -160,7 +160,15 @@ class PiAdapter(EngineAdapter):
         if session_id:
             outcome.artifact_paths = [Path(session_file)] if session_file else []
         outcome.branch = _read_branch(worktree)
+        # Map the agent's final text into the fields the write-back step reads.
+        # A fix task should emit the structured PR body (## Repro/Cause/Fix/
+        # Verification); anything else becomes a single comment.
+        if _looks_like_pr_body(last_text):
+            outcome.pr_body = last_text
+        elif last_text:
+            outcome.comment = last_text
         return outcome
+
 
 
 # -- process wrapper & framing -------------------------------------------
@@ -193,6 +201,14 @@ def _read_branch(worktree: Path | None) -> str:
     return proc.stdout.strip()
 
 
+def _looks_like_pr_body(text: str) -> bool:
+    """True if the text contains the structured sections required for a PR."""
+    if not text:
+        return False
+    sections = ("## Repro", "## Cause", "## Fix", "## Verification")
+    return sum(1 for s in sections if s in text) >= 2
+
+
 def _parse_transcript(session_path: Path) -> list[dict]:
     out: list[dict] = []
     try:
@@ -217,7 +233,7 @@ class _SpawnedPi:
     on Unicode separators (pi's docs warn generic line readers are unsafe).
     """
 
-    def __init__(self, binary: str, args: list[str]) -> None:  # noqa: ANN101
+    def __init__(self, binary: str, args: list[str], *, cwd: Path | None = None) -> None:  # noqa: ANN101
         import subprocess
 
         # Scrub secrets so the agent can never read the token or the proxy HMAC
@@ -234,6 +250,7 @@ class _SpawnedPi:
             stderr=subprocess.DEVNULL,
             bufsize=-1,
             env=env,
+            cwd=str(cwd) if cwd is not None else None,
         )
         self._buf = bytearray()
 

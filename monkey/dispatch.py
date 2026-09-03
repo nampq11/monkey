@@ -78,14 +78,26 @@ def classify_and_build_task(event_type: str, payload: dict, settings) -> Task | 
 
 def fix_prompt(title: str, body: str) -> str:
     return (
-        f"You are helping triage a GitHub issue in this repository.\n"
+        f"You are triaging a bug report in this repository. Your job is to "
+        f"actually fix it, not just analyze it. Follow these steps IN ORDER and "
+        f"do NOT stop until you reach step 6.\n\n"
         f"Title: {title}\n\nBody:\n{body}\n\n"
-        "If this is a bug or documentation issue, REPRODUCE it, find the cause, "
-        "fix it on the current branch, and verify. Then finalize with a clear "
-        "structured report using exactly these sections:\n"
+        "1. REPRODUCE: run the app/tests or write a small script to confirm the "
+        "bug. Show the actual failure.\n"
+        "2. FIND THE CAUSE: read the relevant source and pinpoint the exact "
+        "line/condition responsible.\n"
+        "3. FIX: EDIT the source file(s) with the edit/write tools. Make a small, "
+        "targeted change. You MUST change the code - analysis alone is not a "
+        "fix.\n"
+        "4. VERIFY: run the tests (or repro) and show they now pass.\n"
+        "5. COMMIT: stage and commit your changes with a clear message. This is "
+        "required; a fix without a commit is incomplete.\n"
+        "6. REPORT: produce a final message with exactly these sections:\n"
         "## Repro\n## Cause\n## Fix\n## Verification\n"
-        "End with a line: Fixes #<issue-number>. Do not open the PR yourself; "
-        "just produce the body and leave the branch/commits ready."
+        "and end with a line: Fixes #<issue-number>.\n\n"
+        "IMPORTANT: Do not merely explore and summarize. You must make a code "
+        "change and commit it. If there is genuinely nothing to fix, say so "
+        "explicitly in the ## Cause section and do not fabricate a fix."
     )
 
 

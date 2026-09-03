@@ -58,7 +58,10 @@ def ensure_workspace(
         _run(["git", "clone", "--mirror", repo_url, str(mirror)])
 
     # 2. Create worktree from the mirror on a dedicated branch.
-    _run(["git", "-C", str(mirror), "branch", "-f", branch, f"origin/{default_branch}"])
+    # A `git clone --mirror` stores branches as refs/heads/* (no origin/remote
+    # tracking refs), so base the new branch on refs/heads/<default_branch>
+    # rather than origin/<default_branch>.
+    _run(["git", "-C", str(mirror), "branch", "-f", branch, f"refs/heads/{default_branch}"])
     base.mkdir(parents=True, exist_ok=True)
     _run(["git", "-C", str(mirror), "worktree", "add", "-f", str(worktree), branch])
 

@@ -51,6 +51,7 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def _serve() -> None:
+    import threading
     import uvicorn
 
     settings = get_settings()
@@ -60,22 +61,29 @@ def _serve() -> None:
 
     adapter = get_adapter()
 
+    # The webhook app uses its own Store; hand that same connection to the
+    # worker so both share one SQLite db (mkdir parent is handled by Server).
+    from .webhook import _STORE as _webhook_store
+
     async def _run_worker():
         await worker_loop(store, adapter)
 
-    # Run webhook + worker concurrently in one process.
+    # Run Uvicorn (webhook) in a background thread so its own event loop can
+    # own the server, and run the worker on the main loop.
     config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
     server = uvicorn.Server(config)
 
-    async def _main():
-        from .webhook import _env_store
-        # Reuse the same store in the webhook app - patch it in.
+    def _run_server():
+        server.run()
 
-        task = asyncio.create_task(_run_worker())
-        await server.serve()
-        task.cancel()
+    thread = threading.Thread(target=_run_server, daemon=True)
+    thread.start()
 
-    asyncio.run(_main())
+    try:
+        asyncio.run(_run_worker())
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
 
 
 def _gh_proxy() -> None:

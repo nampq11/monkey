@@ -39,7 +39,9 @@ def client():
 def _signed_post(client, path: str, body: dict, *, bad_sig: str | None = None):
     data = json.dumps(body).encode()
     ts = int(time.time())
-    sig = bad_sig if bad_sig is not None else hmac_sign(HMAC_KEY, data)
+    # The timestamp is bound into the signed payload ("{ts}:{body}"); a
+    # signature over the bare body is rejected by the gate.
+    sig = bad_sig if bad_sig is not None else hmac_sign(HMAC_KEY, data, ts)
     return client.post(
         path,
         content=data,
@@ -75,14 +77,33 @@ def test_bad_signature_is_rejected(client):
 
 
 def test_invalid_timestamp_is_rejected(client):
+    ts = int(time.time()) - 300  # outside ±30s skew
     data = json.dumps({"body": "hi"}).encode()
     resp = client.post(
         "/issues/acme/widget/1/comment",
         content=data,
         headers={
             "Content-Type": "application/json",
-            "x-monkey-sig": hmac_sign(HMAC_KEY, data),
-            "x-monkey-ts": str(int(time.time()) - 300),
+            "x-monkey-sig": hmac_sign(HMAC_KEY, data, ts),
+            "x-monkey-ts": str(ts),
+        },
+    )
+    assert resp.status_code == 401
+
+
+def test_replayed_signature_with_fresh_timestamp_is_rejected(client):
+    """Regression: x-monkey-ts must be bound into the signature. A captured
+    (body, signature) pair replayed with a fresh timestamp must 401."""
+    data = json.dumps({"body": "hi"}).encode()
+    old_ts = int(time.time()) - 3600
+    captured_sig = hmac_sign(HMAC_KEY, data, old_ts)
+    resp = client.post(
+        "/issues/acme/widget/1/comment",
+        content=data,
+        headers={
+            "Content-Type": "application/json",
+            "x-monkey-sig": captured_sig,
+            "x-monkey-ts": str(int(time.time())),
         },
     )
     assert resp.status_code == 401

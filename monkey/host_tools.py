@@ -31,7 +31,7 @@ class GHProxy:
         payload_json = (json or {}).copy()
         payload_json.pop("_raw1", None)
         serialized = _dumps(payload_json).encode()
-        sig = hmac_sign(self.key, serialized)
+        sig = hmac_sign(self.key, serialized, ts)
         headers = {
             "x-monkey-sig": sig,
             "x-monkey-ts": str(ts),

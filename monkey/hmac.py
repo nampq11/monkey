@@ -45,9 +45,17 @@ def verify_github_signature(
         raise BadSignature("signature mismatch")
 
 
-def hmac_sign(secret: str, body: bytes) -> str:
-    """Produce an X-Hub-Signature-256 value for a given body (for tests / proxy)."""
-    return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+def hmac_sign(secret: str, body: bytes, timestamp: str | int | None = None) -> str:
+    """Produce an X-Hub-Signature-256 value for a given body (for tests / proxy).
+
+    When a timestamp is given it is bound into the signed payload as ``"{ts}:{body}"``
+    so the signature is only valid together with that exact timestamp header.
+    """
+    if timestamp is None:
+        payload = body
+    else:
+        payload = f"{timestamp}:{body.decode()}".encode()
+    return "sha256=" + hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
 
 
 def verify_internal_signature(
@@ -61,7 +69,10 @@ def verify_internal_signature(
     """Verify an internal monkey <-> gh-proxy signed request.
 
     Unlike GitHub webhooks this also checks a timestamp header to reject
-    replay across a ±skew_seconds window. The header encodes the expiry epoch.
+    replay across a ±skew_seconds window. The header encodes the expiry epoch
+    and is bound into the signature payload ("{ts}:{body}"), so a captured
+    (body, signature) pair cannot be replayed with a forged fresh timestamp:
+    any change to x-monkey-ts invalidates the signature itself.
     """
     if not signature_header:
         raise BadSignature("missing signature header")
@@ -77,7 +88,7 @@ def verify_internal_signature(
     if abs(now - ts) > skew_seconds:
         raise BadSignature("timestamp outside skew window")
 
-    expected = hmac.new(key.encode(), body, hashlib.sha256).hexdigest()
+    expected = hmac.new(key.encode(), f"{ts}:{body.decode()}".encode(), hashlib.sha256).hexdigest()
     provided = signature_header.removeprefix("sha256=")
     if not _constant_time_equal(expected, provided):
         raise BadSignature("signature mismatch")

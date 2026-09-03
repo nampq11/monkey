@@ -238,10 +238,12 @@ class _SpawnedPi:
 
         # Scrub secrets so the agent can never read the token or the proxy HMAC
         # key (which it could use to sign its own requests to gh-proxy).
+        # Filter by prefix: any GITHUB_* or MONKEY_* variable is sensitive
+        # (tokens, webhook secrets, HMAC keys, DB URLs, ...).
         env = {
             k: v
             for k, v in os.environ.items()
-            if k not in ("GITHUB_TOKEN", "MONKEY_GH_PROXY_HMAC_KEY")
+            if not k.startswith(("GITHUB_", "MONKEY_"))
         }
         self.proc = subprocess.Popen(
             [binary, *args],

@@ -51,6 +51,13 @@ class Store:
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        # The webhook receiver (uvicorn thread) and the worker loop share the
+        # same SQLite file. WAL plus a busy timeout lets concurrent writers
+        # queue instead of throwing "database is locked". WAL also allows
+        # readers to proceed while a write is in flight.
+        self.conn.execute("PRAGMA journal_mode = WAL;")
+        self.conn.execute("PRAGMA busy_timeout = 5000;")
+        self.conn.execute("PRAGMA foreign_keys = ON;")
         self.conn.executescript(SCHEMA)
         self.conn.commit()
 

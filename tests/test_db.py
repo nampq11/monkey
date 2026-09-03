@@ -38,3 +38,17 @@ def test_audit_tool_call_recorded(tmp_path):
     s.audit_tool_call("acme", "widget", 1, "/issues/1/comment", "{}", "{}")
     row = s.conn.execute("SELECT * FROM tool_calls").fetchone()
     assert row["tool"] == "/issues/1/comment"
+
+
+def test_store_enables_wal_and_busy_timeout(tmp_path):
+    """The store is opened with WAL + busy_timeout so concurrent writers (webhook
+    thread + worker loop on the same file) queue instead of throwing
+    'database is locked'."""
+    s = _store(tmp_path)
+    try:
+        mode = s.conn.execute("PRAGMA journal_mode").fetchone()[0]
+        assert mode.lower() == "wal"
+        busy = s.conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        assert busy == 5000
+    finally:
+        s.close()

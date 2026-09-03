@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from typing import Annotated
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
@@ -16,7 +18,14 @@ from .config import get_settings
 from .db import Store
 from .hmac import BadSignature, verify_github_signature
 
-app = FastAPI(title="monkey")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    get_settings()  # raises if required config missing
+    yield
+
+
+app = FastAPI(title="monkey", lifespan=lifespan)
 
 
 def _env_store() -> Store:
@@ -28,13 +37,6 @@ def _env_store() -> Store:
 
 
 _STORE: Store | None = None
-
-
-@app.on_event("startup")
-def _load_settings() -> None:
-    get_settings()  # raises if required config missing
-
-
 @app.get("/healthz")
 def healthz() -> dict:
     return {"ok": True}

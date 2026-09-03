@@ -11,6 +11,7 @@ internal-only Docker network.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import os
 import subprocess
 
@@ -20,20 +21,22 @@ from fastapi.responses import JSONResponse
 
 from ..hmac import BadSignature, verify_internal_signature
 
-app = FastAPI(title="monkey gh-proxy")
-
 GH_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 HMAC_KEY = os.environ.get("MONKEY_GH_PROXY_HMAC_KEY", "")
 API = "https://api.github.com"
 
 
-@app.on_event("startup")
-def _refuse_bad_config() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     # Never run without a token or a shared HMAC key: this defeats the purpose.
     if not GH_TOKEN:
         raise RuntimeError("gh-proxy refuses to start without GITHUB_TOKEN")
     if not HMAC_KEY:
         raise RuntimeError("gh-proxy refuses to start without MONKEY_GH_PROXY_HMAC_KEY")
+    yield
+
+
+app = FastAPI(title="monkey gh-proxy", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -116,12 +119,15 @@ async def create_ref(owner: str, repo: str, body: dict):
 async def git_push(body: dict):
     worktree = body.get("worktree")
     branch = body.get("branch")
-    if not worktree or not branch:
-        raise HTTPException(status_code=422, detail="worktree and branch required")
+    repo = body.get("repo")
+    if not worktree or not branch or not repo:
+        raise HTTPException(
+            status_code=422, detail="worktree, branch, and repo required"
+        )
 
     env = dict(os.environ)
     env["GIT_TOKEN"] = GH_TOKEN
-    remote = f"https://x-access-token:{GH_TOKEN}@github.com/{body['repo']}.git"
+    remote = f"https://x-access-token:{GH_TOKEN}@github.com/{repo}.git"
 
     try:
         subprocess.run(

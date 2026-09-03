@@ -100,3 +100,41 @@ def test_valid_signature_passes_gate(client, monkeypatch):
     resp = _signed_post(client, "/issues/acme/widget/1/comment", {"body": "hi"})
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
+
+
+def test_git_push_requires_repo(client):
+    """`repo` must be validated alongside worktree/branch; a missing one must
+    return 422 (not a KeyError -> 500)."""
+    for missing in ("worktree", "branch", "repo"):
+        body = {
+            "worktree": "/tmp/wt",
+            "branch": "farm/x",
+            "repo": "acme/widget",
+        }
+        body.pop(missing)
+        resp = _signed_post(client, "/git/push", body)
+        assert resp.status_code == 422, f"missing {missing} should be 422"
+
+
+def test_git_push_accepts_valid_fields(client, monkeypatch):
+    """A signed /git/push with all three fields must reach the subprocess call
+    without a validation error (monkeypatch the push to avoid real git)."""
+    import subprocess
+    import monkey.gh_proxy.main as mod
+
+    calls = {}
+
+    def fake_run(args, **kw):
+        calls["args"] = args
+        calls["kw"] = kw
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    resp = _signed_post(
+        client,
+        "/git/push",
+        {"worktree": "/tmp/wt", "branch": "farm/x", "repo": "acme/widget"},
+    )
+    assert resp.status_code == 200
+    # The remote must embed the validated repo, not raise KeyError on it.
+    # args: ["git","-C",worktree,"push","-f",remote,"HEAD:branch"]
+    assert calls["args"][5] == "https://x-access-token:test-gh-proxy-token@github.com/acme/widget.git"

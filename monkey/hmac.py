@@ -45,9 +45,20 @@ def verify_github_signature(
         raise BadSignature("signature mismatch")
 
 
-def hmac_sign(secret: str, body: bytes) -> str:
-    """Produce an X-Hub-Signature-256 value for a given body (for tests / proxy)."""
-    return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+def hmac_sign(secret: str, body: bytes, timestamp: int | None = None) -> str:
+    """Produce an X-Hub-Signature-256 value for a given body (for tests / proxy).
+
+    GitHub webhook signing passes no timestamp (the MAC covers the raw body
+    only). Internal monkey <-> gh-proxy calls MUST pass the timestamp so it is
+    bound into the signed payload as "<ts>:<body>"; otherwise the x-monkey-ts
+    skew check could be bypassed by replaying a captured signature with a
+    refreshed timestamp header.
+    """
+    if timestamp is None:
+        mac_input = body
+    else:
+        mac_input = f"{int(timestamp)}:{body.decode()}".encode()
+    return "sha256=" + hmac.new(secret.encode(), mac_input, hashlib.sha256).hexdigest()
 
 
 def verify_internal_signature(
@@ -77,7 +88,10 @@ def verify_internal_signature(
     if abs(now - ts) > skew_seconds:
         raise BadSignature("timestamp outside skew window")
 
-    expected = hmac.new(key.encode(), body, hashlib.sha256).hexdigest()
+    # The timestamp must be bound into the MAC, not just checked against the
+    # clock: otherwise a captured (body, signature) pair can be replayed
+    # forever by refreshing x-monkey-ts within the skew window.
+    expected = hmac.new(key.encode(), f"{ts}:{body.decode()}".encode(), hashlib.sha256).hexdigest()
     provided = signature_header.removeprefix("sha256=")
     if not _constant_time_equal(expected, provided):
         raise BadSignature("signature mismatch")

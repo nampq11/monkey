@@ -31,7 +31,9 @@ class GHProxy:
         payload_json = (json or {}).copy()
         payload_json.pop("_raw1", None)
         serialized = _dumps(payload_json).encode()
-        sig = hmac_sign(self.key, serialized)
+        # Bind the timestamp into the MAC ("<ts>:<body>") so a captured
+        # signature cannot be replayed with a refreshed x-monkey-ts header.
+        sig = hmac_sign(self.key, serialized, ts)
         headers = {
             "x-monkey-sig": sig,
             "x-monkey-ts": str(ts),

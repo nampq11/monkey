@@ -39,7 +39,9 @@ def client():
 def _signed_post(client, path: str, body: dict, *, bad_sig: str | None = None):
     data = json.dumps(body).encode()
     ts = int(time.time())
-    sig = bad_sig if bad_sig is not None else hmac_sign(HMAC_KEY, data)
+    # The timestamp is bound into the MAC ("<ts>:<body>") so a captured
+    # signature cannot be replayed with a refreshed x-monkey-ts header.
+    sig = bad_sig if bad_sig is not None else hmac_sign(HMAC_KEY, data, ts)
     return client.post(
         path,
         content=data,
@@ -75,14 +77,34 @@ def test_bad_signature_is_rejected(client):
 
 
 def test_invalid_timestamp_is_rejected(client):
+    ts = int(time.time()) - 300
     data = json.dumps({"body": "hi"}).encode()
     resp = client.post(
         "/issues/acme/widget/1/comment",
         content=data,
         headers={
             "Content-Type": "application/json",
-            "x-monkey-sig": hmac_sign(HMAC_KEY, data),
-            "x-monkey-ts": str(int(time.time()) - 300),
+            "x-monkey-sig": hmac_sign(HMAC_KEY, data, ts),
+            "x-monkey-ts": str(ts),
+        },
+    )
+    assert resp.status_code == 401
+
+
+def test_replayed_signature_with_fresh_timestamp_is_rejected(client):
+    """Replay regression: sign a request once (as if captured), then resend
+    the same body + signature with a fresh x-monkey-ts inside the ±30s skew
+    window. The gate must 401 because the timestamp is bound into the MAC."""
+    data = json.dumps({"body": "captured"}).encode()
+    captured_sig = hmac_sign(HMAC_KEY, data, int(time.time()) - 10)
+    fresh_ts = int(time.time())  # attacker-refreshed, well within skew
+    resp = client.post(
+        "/issues/acme/widget/1/comment",
+        content=data,
+        headers={
+            "Content-Type": "application/json",
+            "x-monkey-sig": captured_sig,
+            "x-monkey-ts": str(fresh_ts),
         },
     )
     assert resp.status_code == 401

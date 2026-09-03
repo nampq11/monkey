@@ -36,10 +36,16 @@ def client():
         yield c
 
 
-def _signed_post(client, path: str, body: dict, *, bad_sig: str | None = None):
+def _signed_post(client, path: str, body: dict, *, bad_sig: str | None = None, ts: int | None = None):
     data = json.dumps(body).encode()
-    ts = int(time.time())
-    sig = bad_sig if bad_sig is not None else hmac_sign(HMAC_KEY, data)
+    ts = int(time.time()) if ts is None else ts
+    # The timestamp is bound into the signed payload ("{ts}:{body}"), matching
+    # GHProxy._call; a body-only signature must fail verification.
+    sig = (
+        bad_sig
+        if bad_sig is not None
+        else hmac_sign(HMAC_KEY, data, ts)
+    )
     return client.post(
         path,
         content=data,
@@ -76,13 +82,33 @@ def test_bad_signature_is_rejected(client):
 
 def test_invalid_timestamp_is_rejected(client):
     data = json.dumps({"body": "hi"}).encode()
+    stale_ts = int(time.time()) - 300
     resp = client.post(
         "/issues/acme/widget/1/comment",
         content=data,
         headers={
             "Content-Type": "application/json",
-            "x-monkey-sig": hmac_sign(HMAC_KEY, data),
-            "x-monkey-ts": str(int(time.time()) - 300),
+            "x-monkey-sig": hmac_sign(HMAC_KEY, data, stale_ts),
+            "x-monkey-ts": str(stale_ts),
+        },
+    )
+    assert resp.status_code == 401
+
+
+def test_replayed_signature_with_fresh_timestamp_is_rejected(client):
+    """Regression: an attacker who captures a signed request must not be able
+    to replay it by refreshing x-monkey-ts within the ±skew window. The
+    timestamp is part of the MAC, so the captured signature no longer matches."""
+    captured_ts = int(time.time())
+    captured_sig = hmac_sign(HMAC_KEY, json.dumps({"body": "hi"}).encode(), captured_ts)
+    fresh_ts = captured_ts + 10  # still inside ±30s skew
+    resp = client.post(
+        "/issues/acme/widget/1/comment",
+        content=json.dumps({"body": "hi"}).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "x-monkey-sig": captured_sig,
+            "x-monkey-ts": str(fresh_ts),
         },
     )
     assert resp.status_code == 401

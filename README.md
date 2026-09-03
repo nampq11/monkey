@@ -53,7 +53,9 @@ Self-hosted GitHub triage bot. Drives a coding-agent engine (default: **pi**) pe
 
 - `GITHUB_TOKEN` lives only in `gh-proxy`; the orchestrator **refuses to start** if it sees it in its own env.
 - HMAC-SHA256 signed requests between services with a ±30s skew window + constant-time compare.
-- `gh-proxy` exposes no host port; it's on an `internal: true` network; egress only to `api.github.com`.
+- `gh-proxy` exposes no host port. The orchestrator sits on an `internal: true`
+  network (isolated from the internet); gh-proxy additionally joins an `egress`
+  bridge so it can reach `api.github.com`, and only gh-proxy holds the token.
 - The agent subprocess env is scrubbed of `GITHUB_TOKEN` / `MONKEY_GH_PROXY_HMAC_KEY`.
 - Bad webhook signature returns `401` (never `5xx`).
 

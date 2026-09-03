@@ -79,7 +79,15 @@ async def _handle(store, adapter, row, settings) -> None:
     _write_outcome(session_dir, outcome, kind=task.kind)
     # 5. write back to GitHub via the token proxy.
     try:
-        await write_back(outcome, task.kind, owner=owner, repo=repo, number=number, store=store)
+        await write_back(
+            outcome,
+            task.kind,
+            owner=owner,
+            repo=repo,
+            number=number,
+            store=store,
+            worktree=worktree,
+        )
     except Exception as exc:  # noqa: BLE001
         log.exception("write-back failed for %s", row["delivery_id"])
 

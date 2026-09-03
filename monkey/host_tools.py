@@ -61,6 +61,18 @@ class GHProxy:
     async def open_pull_request(self, body: dict) -> Any:
         return await self._call("POST", f"/pulls/{self.owner}/{self.repo}", json=body)
 
+    async def push(self, worktree: str, branch: str) -> Any:
+        """Push a worktree branch to the remote (token never leaves the proxy)."""
+        return await self._call(
+            "POST",
+            "/git/push",
+            json={
+                "worktree": str(worktree),
+                "branch": branch,
+                "repo": f"{self.owner}/{self.repo}",
+            },
+        )
+
 
 def _dumps(obj) -> str:
     import json

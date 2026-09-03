@@ -8,6 +8,7 @@ escalate the token.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -19,7 +20,16 @@ class GateError(Exception):
     pass
 
 
-async def write_back(outcome, topic: str, *, owner: str, repo: str, number: int, store) -> dict:
+async def write_back(
+    outcome,
+    topic: str,
+    *,
+    owner: str,
+    repo: str,
+    number: int,
+    store,
+    worktree: Path,
+) -> dict:
     """Post the appropriate GitHub action based on the task kind / outcome.
 
     `topic` is the task kind from dispatch (fix | comment | answer | invalid).
@@ -35,7 +45,9 @@ async def write_back(outcome, topic: str, *, owner: str, repo: str, number: int,
     )
 
     if topic in ("fix",):
-        return await _open_pr_if_gated(proxy, outcome, owner, repo, number)
+        return await _open_pr_if_gated(
+            proxy, outcome, owner, repo, number, worktree=worktree
+        )
     if topic == "answer":
         # question: one comment, no PR.
         body = outcome.comment or outcome.summary
@@ -53,7 +65,15 @@ async def write_back(outcome, topic: str, *, owner: str, repo: str, number: int,
     return {"action": "none", "kind": topic}
 
 
-async def _open_pr_if_gated(proxy: GHProxy, outcome, owner: str, repo: str, number: int) -> dict:
+async def _open_pr_if_gated(
+    proxy: GHProxy,
+    outcome,
+    owner: str,
+    repo: str,
+    number: int,
+    *,
+    worktree: Path,
+) -> dict:
     """Open a PR only if the pre-merge gates pass and the body is well-formed."""
     body = outcome.pr_body or outcome.summary
     if not _has_required_headers(body, number):
@@ -62,10 +82,20 @@ async def _open_pr_if_gated(proxy: GHProxy, outcome, owner: str, repo: str, numb
         await proxy.add_issue_comment(_ensure_comment(body))
         return {"action": "comment_fallback", "reason": "missing_required_headers"}
 
+    branch = getattr(outcome, "branch", "") or ""
+    if not branch:
+        # No PR without a real branch: the head ref must exist on the remote.
+        await proxy.add_issue_comment(_ensure_comment(body))
+        return {"action": "comment_fallback", "reason": "missing_branch"}
+
+    # Push the worktree branch so the head ref exists on the remote before
+    # GitHub will accept the PR. The token never leaves gh-proxy.
+    await proxy.push(worktree, branch)
+
     pr = await proxy.open_pull_request(
         {
             "title": outcome.summary.split("\n")[0][:120],
-            "head": outcome.branch if getattr(outcome, "branch", "") else "HEAD",
+            "head": branch,
             "base": "main",
             "body": body,
         }
@@ -102,10 +132,9 @@ def _has_required_headers(body: str, number: int) -> bool:
     sections = ("## Repro", "## Cause", "## Fix", "## Verification")
     if not all(s in body for s in sections):
         return False
-    # Require a reference like "Fixes #N" / "Closes #N" / "Resolves #N".
-    import re
-
-    return bool(re.search(r"(?:Fixes|Closes|Resolves)\s+#\d+", body))
+    # Require a "Fixes #N" / "Closes #N" / "Resolves #N" reference that points at
+    # the issue being worked on (#number), not any other issue.
+    return bool(re.search(rf"(?:Fixes|Closes|Resolves)\s+#{int(number)}\b", body))
 
 
 def _ensure_comment(text: str) -> str:

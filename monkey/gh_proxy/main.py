@@ -15,7 +15,7 @@ import os
 import subprocess
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from ..hmac import BadSignature, verify_internal_signature
@@ -36,15 +36,6 @@ def _refuse_bad_config() -> None:
         raise RuntimeError("gh-proxy refuses to start without MONKEY_GH_PROXY_HMAC_KEY")
 
 
-def _verify(request: Request, x_monkey_sig: str | None, x_monkey_ts: str | None) -> None:
-    try:
-        verify_internal_signature(
-            HMAC_KEY, request.body, x_monkey_sig, timestamp_header=x_monkey_ts
-        )
-    except BadSignature as exc:
-        raise HTTPException(status_code=401, detail="bad signature") from exc
-
-
 @app.middleware("http")
 async def _hmac_gate(request: Request, call_next):
     # Skip auth for /healthz (liveness only, no sensitive action).
@@ -52,8 +43,11 @@ async def _hmac_gate(request: Request, call_next):
         return await call_next(request)
     sig = request.headers.get("x-monkey-sig")
     ts = request.headers.get("x-monkey-ts")
+    # request.body is a coroutine in Starlette; await it to get the raw bytes the
+    # client signed. Passing the method object would raise TypeError inside hmac.
+    body = await request.body()
     try:
-        verify_internal_signature(HMAC_KEY, request.body, sig, timestamp_header=ts)
+        verify_internal_signature(HMAC_KEY, body, sig, timestamp_header=ts)
     except BadSignature:
         return JSONResponse(status_code=401, content={"detail": "bad signature"})
     return await call_next(request)

@@ -18,6 +18,7 @@ use a reader that treats Unicode separators as newlines.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 from pathlib import Path
@@ -63,7 +64,7 @@ class PiAdapter(EngineAdapter):
             running = self._get_running_session(proc)
             last_text = self._get_last_assistant_text(proc)
 
-        return self._build_outcome(session_dir, events, last_text, running=running)
+        return self._build_outcome(session_dir, events, last_text, running=running, worktree=worktree)
 
     def resume(
         self,
@@ -92,7 +93,7 @@ class PiAdapter(EngineAdapter):
             running = self._get_running_session(proc)
             last_text = self._get_last_assistant_text(proc)
 
-        return self._build_outcome(session_dir, events, last_text, running=running)
+        return self._build_outcome(session_dir, events, last_text, running=running, worktree=worktree)
 
     def session_artifacts(self, session_dir: Path) -> dict:
         session_path = _find_session_file(session_dir)
@@ -146,6 +147,7 @@ class PiAdapter(EngineAdapter):
         last_text: str,
         *,
         running: dict,
+        worktree: Path | None = None,
     ) -> Outcome:
         session_id = running.get("sessionId", "")
         session_file = running.get("sessionFile", "")
@@ -157,6 +159,7 @@ class PiAdapter(EngineAdapter):
         )
         if session_id:
             outcome.artifact_paths = [Path(session_file)] if session_file else []
+        outcome.branch = _read_branch(worktree)
         return outcome
 
 
@@ -170,6 +173,24 @@ class TimeoutExpired(Exception):
 def _find_session_file(session_dir: Path) -> Path | None:
     files = sorted(session_dir.glob("*.jsonl"))
     return files[-1] if files else None
+
+
+def _read_branch(worktree: Path | None) -> str:
+    """Return the worktree's checked-out branch name, or '' if unavailable."""
+    if worktree is None:
+        return ""
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "--abbrev-ref", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (subprocess.CalledProcessError, OSError):
+        return ""
+    return proc.stdout.strip()
 
 
 def _parse_transcript(session_path: Path) -> list[dict]:
@@ -199,12 +220,20 @@ class _SpawnedPi:
     def __init__(self, binary: str, args: list[str]) -> None:  # noqa: ANN101
         import subprocess
 
+        # Scrub secrets so the agent can never read the token or the proxy HMAC
+        # key (which it could use to sign its own requests to gh-proxy).
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("GITHUB_TOKEN", "MONKEY_GH_PROXY_HMAC_KEY")
+        }
         self.proc = subprocess.Popen(
             [binary, *args],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             bufsize=-1,
+            env=env,
         )
         self._buf = bytearray()
 

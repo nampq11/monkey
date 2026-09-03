@@ -1,8 +1,10 @@
 """HMAC-SHA256 signature verification for GitHub webhooks and internal gh-proxy calls.
 
-All comparisons use constant-time compare and the same ±30s skew window used by
-roboomp, so a timing or replay attack cannot distinguish a valid signature from
-an invalid one. Bad signatures are returned as 401 (never 5xx) so GitHub stops
+GitHub webhook verification is a constant-time compare of the X-Hub-Signature-256
+value against the raw request body; GitHub payloads carry no timestamp, so there is
+no replay window here (replays are deduplicated on the X-GitHub-Delivery id). Internal
+monkey <-> gh-proxy requests add a timestamp header and enforce a skew window so
+replays are rejected. Bad signatures are returned as 401 (never 5xx) so GitHub stops
 retrying.
 """
 
@@ -25,8 +27,6 @@ def verify_github_signature(
     secret: str,
     body: bytes,
     signature_header: str | None,
-    *,
-    skew_seconds: int = 30,
 ) -> None:
     """Verify an X-Hub-Signature-256 header against the raw request body.
 

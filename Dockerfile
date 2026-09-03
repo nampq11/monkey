@@ -2,15 +2,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# System deps for git + build.
+# System deps: git + node/npm (engine runtime), in one apt pass so the updated
+# package lists are still present. --ignore-scripts for pi: skip postinstall
+# hooks that may pull native deps or fail in a slim container.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
+    git nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
-# Install pi (the coding-agent engine) + its Node runtime.
-RUN apt-get install -y --no-install-recommends nodejs npm \
-    && npm install -g @oh-my-pi/pi-coding-agent \
-    && rm -rf /var/lib/apt/lists/*
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 
 COPY pyproject.toml ./
 COPY monkey ./monkey
@@ -25,3 +24,5 @@ RUN chmod +x /entrypoint.sh
 
 EXPOSE 8000 8080
 ENTRYPOINT ["/entrypoint.sh"]
+# Default to the orchestrator; compose overrides this for the gh-proxy service.
+CMD ["python", "-m", "monkey.cli", "serve"]

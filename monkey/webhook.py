@@ -75,6 +75,13 @@ async def github_webhook(request: Request):
     if f"{owner}/{repo}" not in settings.allowlist:
         return {"ok": True, "skipped": "repo not in allowlist"}
 
+    # Ignore events authored by the bot itself or other bots to avoid feedback loops.
+    sender = (payload.get("sender") or {}).get("login", "")
+    if settings.bot_login and sender.lower() == settings.bot_login.lower():
+        return {"ok": True, "skipped": "bot-authored event"}
+    if sender.endswith("[bot]"):
+        return {"ok": True, "skipped": "bot-authored event"}
+
     is_new = store.enqueue(
         delivery_id, event_type, owner, repo, number, body.decode("utf-8", "replace")
     )

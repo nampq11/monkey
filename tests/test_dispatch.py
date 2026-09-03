@@ -65,3 +65,10 @@ def test_closed_action_is_skipped():
     payload["action"] = "closed"
     task = classify_and_build_task("issues", payload, settings)
     assert task is None
+
+
+def test_pull_request_events_are_skipped():
+    settings = _Settings()
+    payload = _payload("fix(core): broken bug regression", "error stacktrace")
+    task = classify_and_build_task("pull_request", payload, settings)
+    assert task is None

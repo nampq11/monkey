@@ -34,6 +34,11 @@ def classify_and_build_task(event_type: str, payload: dict, settings) -> Task | 
     if action in ("closed", "deleted", "locked"):
         return None
 
+    # Opening or updating a pull request is not an issue bug report.
+    # Code submissions must never trigger the fix pipeline (avoids PR feedback loops).
+    if event_type == "pull_request":
+        return None
+
     issue = payload.get("issue") or payload.get("pull_request") or {}
     title = issue.get("title", "")
     body = issue.get("body") or ""

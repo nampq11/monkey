@@ -45,6 +45,10 @@ CREATE INDEX IF NOT EXISTS idx_events_owner_repo_num ON events(owner, repo, numb
 class Store:
     def __init__(self, path: str | Path) -> None:
         self.path = str(path)
+        # /data (and similar) may not exist when running without a mounted
+        # volume (e.g. bare `docker run` or local dev). Create it so sqlite can
+        # open the file.
+        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)

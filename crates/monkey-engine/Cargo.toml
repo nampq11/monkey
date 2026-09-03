@@ -1,0 +1,16 @@
+[package]
+name = "monkey-engine"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Engine adapter trait and pi integration for the monkey triage bot"
+
+[lib]
+path = "src/monkey_engine.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+futures-util = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }

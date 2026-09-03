@@ -1,0 +1,166 @@
+use regex::Regex;
+use serde_json::{Value, json};
+use std::path::Path;
+use std::process::Command;
+
+use crate::host_tools::GHProxy;
+use monkey_core::config::Settings;
+use monkey_core::db::Store;
+use monkey_core::dispatch::TaskKind;
+use monkey_engine::adapters::Outcome;
+
+/// Identifies the GitHub issue a write-back targets. Grouping the three
+/// fields keeps them from drifting apart across function signatures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoRef {
+    pub owner: String,
+    pub repo: String,
+    pub number: i64,
+}
+
+impl RepoRef {
+    pub fn slug(&self) -> String {
+        format!("{}/{}", self.owner, self.repo)
+    }
+}
+
+pub async fn write_back(
+    outcome: &Outcome,
+    kind: TaskKind,
+    repo_ref: &RepoRef,
+    store: &Store,
+    worktree: &Path,
+    settings: &Settings,
+) -> Result<Value, String> {
+    let proxy = GHProxy::new(
+        &settings.gh_proxy_url,
+        &settings.gh_proxy_hmac_key,
+        store.clone(),
+        repo_ref,
+    );
+
+    match kind {
+        TaskKind::Fix => open_pr_if_gated(&proxy, outcome, repo_ref, worktree).await,
+        TaskKind::Answer | TaskKind::Comment | TaskKind::Invalid => {
+            let body = if !outcome.comment.is_empty() {
+                &outcome.comment
+            } else {
+                &outcome.summary
+            };
+            proxy.add_issue_comment(&ensure_comment(body)).await?;
+            Ok(json!({ "action": "comment", "kind": kind }))
+        }
+        TaskKind::Skip => Ok(json!({ "action": "none", "kind": kind })),
+    }
+}
+
+pub async fn open_pr_if_gated(
+    proxy: &GHProxy,
+    outcome: &Outcome,
+    repo_ref: &RepoRef,
+    worktree: &Path,
+) -> Result<Value, String> {
+    let body = if !outcome.pr_body.is_empty() {
+        &outcome.pr_body
+    } else {
+        &outcome.summary
+    };
+
+    if !has_required_headers(body, repo_ref.number) {
+        let _ = proxy.add_issue_comment(&ensure_comment(body)).await;
+        return Ok(json!({
+            "action": "comment_fallback",
+            "reason": "missing_required_headers"
+        }));
+    }
+
+    let branch = &outcome.branch;
+    if branch.is_empty() {
+        let _ = proxy.add_issue_comment(&ensure_comment(body)).await;
+        return Ok(json!({
+            "action": "comment_fallback",
+            "reason": "missing_branch"
+        }));
+    }
+
+    // Push the worktree branch so the head ref exists on remote
+    proxy.push(worktree, branch).await?;
+
+    let first_line = outcome.summary.lines().next().unwrap_or("");
+    let title = if first_line.len() > 120 {
+        &first_line[..120]
+    } else {
+        first_line
+    };
+
+    let pr = proxy
+        .open_pull_request(json!({
+            "title": title,
+            "head": branch,
+            "base": "main",
+            "body": body
+        }))
+        .await?;
+
+    Ok(json!({ "action": "open_pr", "pr": pr }))
+}
+
+pub fn has_required_headers(body: &str, number: i64) -> bool {
+    let sections = ["## Repro", "## Cause", "## Fix", "## Verification"];
+    if !sections.iter().all(|&s| body.contains(s)) {
+        return false;
+    }
+
+    let re_str = format!(r"(?i)(?:Fixes|Closes|Resolves)\s+#{}\b", number);
+    if let Ok(re) = Regex::new(&re_str) {
+        re.is_match(body)
+    } else {
+        false
+    }
+}
+
+pub fn ensure_comment(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        "_no response produced_".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+pub fn gate_pre_push(worktree: &Path, _branch: &str) -> Result<(), String> {
+    let diff = Command::new("git")
+        .args(["-C", worktree.to_str().unwrap(), "diff", "--quiet"])
+        .status()
+        .map_err(|e| format!("git diff check failed: {}", e))?;
+
+    if !diff.success() {
+        return Err("working tree not clean".to_string());
+    }
+
+    let status_out = Command::new("git")
+        .args(["-C", worktree.to_str().unwrap(), "status", "--porcelain"])
+        .output()
+        .map_err(|e| format!("git status check failed: {}", e))?;
+
+    if !status_out.stdout.is_empty() {
+        return Err("working tree not clean".to_string());
+    }
+
+    let log_out = Command::new("git")
+        .args([
+            "-C",
+            worktree.to_str().unwrap(),
+            "log",
+            "-1",
+            "--format=%an <%ae>",
+        ])
+        .output()
+        .map_err(|e| format!("git log check failed: {}", e))?;
+
+    if String::from_utf8_lossy(&log_out.stdout).trim().is_empty() {
+        return Err("no author on HEAD commit".to_string());
+    }
+
+    Ok(())
+}

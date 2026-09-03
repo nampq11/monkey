@@ -9,6 +9,7 @@ services:
       # supplies GITHUB_TOKEN for the proxy; override it to empty here so the
       # orchestrator's mode-exclusive auth check doesn't see both proxy + PAT.
       GITHUB_TOKEN: ""
+    command: ["serve"]
     volumes:
       - monkey-data:/data
       # pi reads ~/.pi/agent/models.json for providers/api keys (chosen: mount
@@ -31,12 +32,12 @@ services:
   gh-proxy:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.gh-proxy
     env_file: .env
     environment:
       GITHUB_TOKEN: ${GITHUB_TOKEN}
       MONKEY_GH_PROXY_HMAC_KEY: ${MONKEY_GH_PROXY_HMAC_KEY}
-    command: python -m monkey.cli gh-proxy
+    command: ["gh-proxy"]
     volumes:
       # gh-proxy runs `git push` on the issue worktrees, so it needs the same
       # workspaces volume the orchestrator mounts (token stays in gh-proxy).

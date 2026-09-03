@@ -156,6 +156,76 @@ def test_git_push_accepts_valid_fields(client, monkeypatch):
         {"worktree": "/tmp/wt", "branch": "farm/x", "repo": "acme/widget"},
     )
     assert resp.status_code == 200
-    # The remote must embed the validated repo, not raise KeyError on it.
-    # args: ["git","-C",worktree,"push","-f",remote,"HEAD:branch"]
-    assert calls["args"][5] == "https://x-access-token:test-gh-proxy-token@github.com/acme/widget.git"
+    # The remote is a plain URL embedding the validated repo (no token), and
+    # the push targets the requested branch.
+    assert "https://github.com/acme/widget.git" in calls["args"]
+    assert "HEAD:farm/x" in calls["args"]
+    # Credentials ride along in the env for the dynamic credential helper.
+    assert calls["kw"]["env"]["GIT_TOKEN"] == TOKEN
+
+
+def test_git_push_args_contain_no_secret_material(client, monkeypatch):
+    """Regression: the raw token (or any encoding of it) must never appear in
+    the git command arguments, which are world-readable via `ps aux` /
+    /proc/<pid>/cmdline."""
+    import base64
+    import subprocess
+    import monkey.gh_proxy.main as mod
+
+    calls = {}
+
+    def fake_run(args, **kw):
+        calls["args"] = args
+        calls["kw"] = kw
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    resp = _signed_post(
+        client,
+        "/git/push",
+        {"worktree": "/tmp/wt", "branch": "farm/x", "repo": "acme/widget"},
+    )
+    assert resp.status_code == 200
+    argv = " ".join(calls["args"])
+    encodings = {
+        "raw": TOKEN,
+        "url-encoded": TOKEN.replace("-", "%2D"),
+        "base64(x-access-token:token)": base64.b64encode(
+            f"x-access-token:{TOKEN}".encode()
+        ).decode(),
+        "base64(token)": base64.b64encode(TOKEN.encode()).decode(),
+    }
+    for name, secret in encodings.items():
+        assert secret not in argv, f"{name} token leaked into git argv"
+
+
+def test_credential_helper_supplies_token():
+    """The inline credential helper (invoked by git via `sh -c`) must yield
+    username=x-access-token and the token from $GIT_TOKEN -- proving auth still
+    works even though the token never touches the command line."""
+    import subprocess
+    import monkey.gh_proxy.main as mod
+
+    env = dict(os.environ)
+    env["GIT_TOKEN"] = TOKEN
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    proc = subprocess.run(
+        [
+            "git",
+            "-c",
+            "credential.helper=",
+            "-c",
+            f"credential.helper={mod._CRED_HELPER}",
+            "credential",
+            "fill",
+        ],
+        input="protocol=https\nhost=github.com\n\n",
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+    out = dict(
+        line.split("=", 1) for line in proc.stdout.strip().splitlines() if "=" in line
+    )
+    assert out["username"] == "x-access-token"
+    assert out["password"] == TOKEN

@@ -110,9 +110,15 @@ async def create_ref(owner: str, repo: str, body: dict):
 
 
 # --------------------------------------------------------------------------
-# git push: runs inside gh-proxy so the token only lives in an ephemeral
-# process env var; the remote URL in .git/config stays token-free.
+# git push: runs inside gh-proxy. The token is delivered to git through a
+# dynamic credential helper that reads $GIT_TOKEN from the process env, so it
+# never appears in the remote URL or the command arguments (both are readable
+# by any process via `ps aux` / /proc/<pid>/cmdline; environ is not).
 # --------------------------------------------------------------------------
+
+# Inline helper invoked by `sh -c` at credential-query time; $GIT_TOKEN is
+# expanded by the shell from the push process's env, never placed in argv.
+_CRED_HELPER = "!f() { echo username=x-access-token; echo password=$GIT_TOKEN; }; f"
 
 
 @app.post("/git/push")
@@ -127,11 +133,27 @@ async def git_push(body: dict):
 
     env = dict(os.environ)
     env["GIT_TOKEN"] = GH_TOKEN
-    remote = f"https://x-access-token:{GH_TOKEN}@github.com/{repo}.git"
+    # Fail fast instead of hanging on an interactive credential prompt.
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    remote = f"https://github.com/{repo}.git"
 
     try:
         subprocess.run(
-            ["git", "-C", worktree, "push", "-f", remote, f"HEAD:{branch}"],
+            [
+                "git",
+                "-C",
+                worktree,
+                # Reset any inherited helper list, then supply credentials via
+                # the inline helper (token stays in env, out of the args).
+                "-c",
+                "credential.helper=",
+                "-c",
+                f"credential.helper={_CRED_HELPER}",
+                "push",
+                "-f",
+                remote,
+                f"HEAD:{branch}",
+            ],
             check=True,
             capture_output=True,
             text=True,

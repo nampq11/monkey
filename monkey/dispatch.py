@@ -51,10 +51,11 @@ def classify_and_build_task(event_type: str, payload: dict, settings) -> Task | 
     is_bug = _has_any(combined, ["bug", "error", "crash", "fail", "broken", "exception", "regression"])
     is_doc = _has_any(combined, ["documentation", "doc", "typo", "readme", "docs"])
 
+    number = issue.get("number")
     if is_bug or is_doc:
         return Task(
             kind="fix",
-            prompt=fix_prompt(title, body),
+            prompt=fix_prompt(title, body, number),
             labels=["bug" if is_bug else "documentation"],
         )
 
@@ -76,7 +77,8 @@ def classify_and_build_task(event_type: str, payload: dict, settings) -> Task | 
 # ---------------------------------------------------------------------------
 
 
-def fix_prompt(title: str, body: str) -> str:
+def fix_prompt(title: str, body: str, number: int | None = None) -> str:
+    fix_target = f"Fixes #{number}" if number is not None else "Fixes #<issue-number>"
     return (
         f"You are triaging a bug report in this repository. Your job is to "
         f"actually fix it, not just analyze it. Follow these steps IN ORDER and "
@@ -94,7 +96,7 @@ def fix_prompt(title: str, body: str) -> str:
         "required; a fix without a commit is incomplete.\n"
         "6. REPORT: produce a final message with exactly these sections:\n"
         "## Repro\n## Cause\n## Fix\n## Verification\n"
-        "and end with a line: Fixes #<issue-number>.\n\n"
+        f"and end with a line: {fix_target}.\n\n"
         "IMPORTANT: Do not merely explore and summarize. You must make a code "
         "change and commit it. If there is genuinely nothing to fix, say so "
         "explicitly in the ## Cause section and do not fabricate a fix."

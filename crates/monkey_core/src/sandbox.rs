@@ -1,9 +1,24 @@
 use regex::Regex;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock, Mutex as StdMutex, PoisonError};
 use thiserror::Error;
 use tokio::process::Command;
+use tokio::sync::Mutex as AsyncMutex;
+
+// The lock map itself uses a std Mutex because it is only held across
+// synchronous map access; the returned per-repository lock is the async one
+// that is held across git operations.
+static REPOSITORY_LOCKS: LazyLock<StdMutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>> =
+    LazyLock::new(|| StdMutex::new(HashMap::new()));
+
+fn repository_lock(mirror: &Path) -> Arc<AsyncMutex<()>> {
+    let mut locks = REPOSITORY_LOCKS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    locks.entry(mirror.to_path_buf()).or_default().clone()
+}
 
 #[derive(Debug, Error)]
 pub enum SandboxError {
@@ -46,6 +61,10 @@ pub async fn ensure_workspace(
     let base = workspaces_root.join(format!("{}__{}__{}", owner, repo, number));
     let worktree = base.join("repo");
     let branch = format!("farm/{}/{}", farm_dir(owner, repo, number), slug(repo));
+    let mirror = workspaces_root.join(format!("{}__{}.git", owner, repo));
+
+    let repository_lock = repository_lock(&mirror);
+    let _mirror_guard = repository_lock.lock().await;
 
     if worktree.exists() && worktree.join(".git").exists() {
         return Ok(worktree);
@@ -53,7 +72,6 @@ pub async fn ensure_workspace(
 
     std::fs::create_dir_all(workspaces_root).map_err(|e| SandboxError::Io(e.to_string()))?;
 
-    let mirror = workspaces_root.join(format!("{}__{}.git", owner, repo));
     let (Some(mirror_str), Some(worktree_str)) = (mirror.to_str(), worktree.to_str()) else {
         return Err(SandboxError::Io(
             "workspace path is not valid UTF-8".to_string(),
@@ -106,6 +124,9 @@ pub async fn cleanup_workspace(
     let base = workspaces_root.join(format!("{}__{}__{}", owner, repo, number));
     let worktree = base.join("repo");
     let mirror = workspaces_root.join(format!("{}__{}.git", owner, repo));
+
+    let repository_lock = repository_lock(&mirror);
+    let _mirror_guard = repository_lock.lock().await;
 
     if worktree.exists() {
         let (Some(mirror_str), Some(worktree_str)) = (mirror.to_str(), worktree.to_str()) else {
@@ -217,6 +238,32 @@ mod tests {
         assert_eq!(
             fs::read_to_string(second.join("state.txt")).expect("failed to read state file"),
             "revision-2\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_preparations_for_same_repository_both_succeed() {
+        let upstream_root = tempfile::tempdir().expect("failed to create upstream tempdir");
+        let upstream = upstream_root.path().join("upstream");
+        run_test_git(upstream_root.path(), &["init", "-b", "main", "upstream"]).await;
+        commit_file(&upstream, "state.txt", "revision-1\n", "revision 1").await;
+
+        let workspaces = tempfile::tempdir().expect("failed to create workspaces tempdir");
+        let repo_url = upstream.to_str().expect("upstream path is UTF-8");
+
+        let (first, second) = tokio::join!(
+            ensure_workspace(workspaces.path(), repo_url, "acme", "widgets", 1, "main"),
+            ensure_workspace(workspaces.path(), repo_url, "acme", "widgets", 2, "main"),
+        );
+        let first = first.expect("first concurrent preparation must succeed");
+        let second = second.expect("second concurrent preparation must succeed");
+        assert_eq!(
+            fs::read_to_string(first.join("state.txt")).expect("failed to read state file"),
+            "revision-1\n"
+        );
+        assert_eq!(
+            fs::read_to_string(second.join("state.txt")).expect("failed to read state file"),
+            "revision-1\n"
         );
     }
 

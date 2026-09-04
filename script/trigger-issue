@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ISSUE_NUM="${1:-}"
+if [[ -z "$ISSUE_NUM" ]]; then
+    echo "Usage: $0 <issue_number>"
+    exit 1
+fi
+
+set -a
+if [[ -f .env ]]; then
+    source .env
+fi
+set +a
+
+REPO="nampq11/monkey"
+echo "Fetching issue #${ISSUE_NUM} from ${REPO}..."
+issue_json=$(gh api "repos/${REPO}/issues/${ISSUE_NUM}")
+repo_json=$(gh api "repos/${REPO}")
+
+delivery_id="local-test-${ISSUE_NUM}-$(date +%s)"
+payload=$(jq -n \
+  --arg action "opened" \
+  --argjson issue "$issue_json" \
+  --argjson repository "$repo_json" \
+  '{
+    action: $action,
+    issue: $issue,
+    repository: $repository,
+    sender: $issue.user
+  }')
+
+WEBHOOK_SECRET="${GITHUB_WEBHOOK_SECRET:-${MONKEY_GITHUB_WEBHOOK_SECRET:-${MONKEY_WEBHOOK_SECRET:-}}}"
+if [[ -z "$WEBHOOK_SECRET" ]]; then
+    echo "Error: GITHUB_WEBHOOK_SECRET is not set in .env" >&2
+    exit 1
+fi
+
+sig="sha256=$(printf '%s' "$payload" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | sed 's/^.* //')"
+
+echo "Sending webhook event for issue #${ISSUE_NUM} (delivery: ${delivery_id})..."
+curl -s -i -X POST http://localhost:8000/webhook/github \
+  -H "Content-Type: application/json" \
+  -H "X-GitHub-Delivery: ${delivery_id}" \
+  -H "X-GitHub-Event: issues" \
+  -H "X-Hub-Signature-256: ${sig}" \
+  -d "$payload" | head -n 15
+
+echo ""
+echo "Event sent! Follow progress with:"
+echo "  docker compose logs -f monkey-orchestrator"

@@ -432,3 +432,87 @@ async fn test_open_pr_updates_existing_when_already_exists() {
         "Fix stale mirrors in sandbox"
     );
 }
+
+#[tokio::test]
+async fn test_open_pr_skips_when_branch_already_merged() {
+    let pushed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let open_attempts = std::sync::Arc::new(std::sync::Mutex::new(0));
+
+    let p_clone = pushed.clone();
+    let o_clone = open_attempts.clone();
+
+    let app = axum::Router::new()
+        .route(
+            "/git/push",
+            axum::routing::post({
+                let p = p_clone.clone();
+                move |axum::Json(body): axum::Json<serde_json::Value>| {
+                    let p = p.clone();
+                    async move {
+                        p.lock().unwrap().push(body);
+                        axum::Json(serde_json::json!({ "ok": true }))
+                    }
+                }
+            }),
+        )
+        .route(
+            "/pulls/acme/widget",
+            axum::routing::get(|| async {
+                axum::Json(serde_json::json!([
+                    {
+                        "number": 23,
+                        "title": "Already merged PR",
+                        "state": "closed",
+                        "merged_at": "2026-09-04T09:23:08Z"
+                    }
+                ]))
+            })
+            .post({
+                let o = o_clone.clone();
+                move || {
+                    let o = o.clone();
+                    async move {
+                        *o.lock().unwrap() += 1;
+                        axum::Json(serde_json::json!({ "number": 24 }))
+                    }
+                }
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let store = Store::new(&db_path).unwrap();
+    let repo_ref = RepoRef {
+        owner: "acme".into(),
+        repo: "widget".into(),
+        number: 123,
+    };
+    let proxy = GHProxy::new(&format!("http://{}", addr), "key", store, &repo_ref).unwrap();
+
+    let branch = "farm/abc1234/widget";
+    let outcome = Outcome {
+        pr_body: GOOD_BODY.to_string(),
+        summary: "Fix duplicate PR bug".to_string(),
+        branch: branch.to_string(),
+        ..Default::default()
+    };
+    let result = open_pr_if_gated(
+        &proxy,
+        &outcome,
+        &repo_ref,
+        std::path::Path::new("/wt"),
+        "main",
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result["action"], "already_merged");
+    assert_eq!(result["pr"]["number"], 23);
+    assert_eq!(*open_attempts.lock().unwrap(), 0);
+}

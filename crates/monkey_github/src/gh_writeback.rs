@@ -91,6 +91,54 @@ pub async fn open_pr_if_gated(
 
     let title = determine_pr_title(worktree, outcome, repo_ref).await;
 
+    // Check if a pull request for this branch already exists (open or merged)
+    // to avoid creating duplicate or conflicting pull requests.
+    let head_filter = format!("{}:{}", repo_ref.owner, branch);
+    if let Ok(mut pulls) = proxy
+        .list_pull_requests(Some(&head_filter), Some("all"))
+        .await
+    {
+        if pulls.as_array().is_none_or(|list| list.is_empty())
+            && let Ok(branch_pulls) = proxy.list_pull_requests(Some(branch), Some("all")).await
+        {
+            pulls = branch_pulls;
+        }
+
+        if let Some(existing_pr) = pulls.as_array().and_then(|list| list.first()) {
+            let is_merged = existing_pr
+                .get("merged_at")
+                .and_then(Value::as_str)
+                .is_some();
+            let is_closed = existing_pr.get("state").and_then(Value::as_str) == Some("closed");
+
+            if is_merged || is_closed {
+                tracing::info!(
+                    "pull request for branch {} is already merged or closed, skipping duplicate PR creation",
+                    branch
+                );
+                return Ok(json!({ "action": "already_merged", "pr": existing_pr }));
+            }
+
+            if let Some(pull_number) = existing_pr.get("number").and_then(Value::as_i64) {
+                tracing::info!(
+                    "pull request #{} already exists for branch {}, updating title and body",
+                    pull_number,
+                    branch
+                );
+                let updated = proxy
+                    .update_pull_request(
+                        pull_number,
+                        json!({
+                            "title": title,
+                            "body": body
+                        }),
+                    )
+                    .await?;
+                return Ok(json!({ "action": "open_pr", "pr": updated }));
+            }
+        }
+    }
+
     let pr_result = proxy
         .open_pull_request(json!({
             "title": title,

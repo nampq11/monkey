@@ -44,6 +44,12 @@ pub fn classify_and_build_task(event_type: &str, payload: &Value) -> Option<Task
         .or_else(|| payload.get("pull_request"))
         .unwrap_or(&empty_obj);
 
+    // Skip closed issues and pull requests so duplicate or delayed webhook events
+    // never trigger unnecessary sandbox checkouts or duplicate triage runs.
+    if issue.get("state").and_then(|s| s.as_str()) == Some("closed") {
+        return None;
+    }
+
     let title = issue.get("title").and_then(|t| t.as_str()).unwrap_or("");
     let body = issue.get("body").and_then(|b| b.as_str()).unwrap_or("");
     let labels: Vec<String> = issue

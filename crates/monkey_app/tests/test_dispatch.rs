@@ -83,3 +83,10 @@ fn test_missing_action_is_skipped() {
     let payload = json!({"issue": {"title": "App crashes", "body": "bug"}});
     assert!(classify_and_build_task("issues", &payload).is_none());
 }
+
+#[test]
+fn test_closed_issue_is_skipped() {
+    let mut payload = make_payload("App crashes", "crash error", None);
+    payload["issue"]["state"] = json!("closed");
+    assert!(classify_and_build_task("issues", &payload).is_none());
+}

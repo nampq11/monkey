@@ -230,9 +230,10 @@ mod tests {
         let workspaces = tempfile::tempdir().expect("failed to create workspaces tempdir");
         let repo_url = upstream.to_str().expect("upstream path is UTF-8");
 
-        let worktree = ensure_workspace(workspaces.path(), repo_url, "acme", "widgets", 7, "master")
-            .await
-            .expect("workspace preparation for a master-default repository must succeed");
+        let worktree =
+            ensure_workspace(workspaces.path(), repo_url, "acme", "widgets", 7, "master")
+                .await
+                .expect("workspace preparation for a master-default repository must succeed");
         assert_eq!(
             fs::read_to_string(worktree.join("state.txt")).expect("failed to read state file"),
             "on-master\n"

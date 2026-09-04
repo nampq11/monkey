@@ -23,7 +23,9 @@ impl EngineAdapter for PanickingAdapter {
     }
 
     async fn resume(&self, _params: RunParams<'_>) -> Result<Outcome, EngineError> {
-        Err(EngineError::Framing("resume not used in this test".to_string()))
+        Err(EngineError::Framing(
+            "resume not used in this test".to_string(),
+        ))
     }
 
     fn session_artifacts(&self, _session_dir: &Path) -> serde_json::Value {

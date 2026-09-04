@@ -22,7 +22,10 @@ FROM node:22-alpine
 
 RUN apk add --no-cache git ca-certificates
 
-RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+# Pinned: monkey speaks pi's JSON-lines RPC contract, and an unpinned engine
+# lets a protocol change reach production untested. Bumps are deliberate and
+# must keep the protocol contract test green.
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.84.4
 
 COPY --from=builder /app/target/release/monkey /usr/local/bin/monkey
 

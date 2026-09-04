@@ -6,6 +6,7 @@ use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
+use crate::gh_proxy;
 use crate::gh_writeback::RepoRef;
 use monkey_core::db::{Store, StoreError};
 use monkey_core::hmac_auth::hmac_sign_with_timestamp;
@@ -124,12 +125,7 @@ impl GHProxy {
             });
         }
 
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-            Ok(json!({ "ok": true }))
-        } else {
-            Ok(serde_json::from_str(trimmed)?)
-        }
+        decode_proxy_body(&text)
     }
 
     pub async fn add_issue_comment(&self, body: &str) -> Result<Value, GhProxyError> {
@@ -208,10 +204,55 @@ impl GHProxy {
     }
 }
 
+pub(crate) fn decode_proxy_body(text: &str) -> Result<Value, GhProxyError> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        Ok(gh_proxy::empty_success_value())
+    } else {
+        Ok(serde_json::from_str(trimmed)?)
+    }
+}
+
 pub fn redact(text: &str) -> String {
     static TOKEN_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"gh[pousr]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+")
             .expect("token redaction regex must compile")
     });
     TOKEN_PATTERN.replace_all(text, "[redacted]").to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GhProxyError, decode_proxy_body};
+    use crate::gh_proxy::empty_success_value;
+    use serde_json::json;
+
+    #[test]
+    fn empty_body_decodes_as_shared_success_value() {
+        assert_eq!(
+            decode_proxy_body("").expect("empty body should decode"),
+            empty_success_value()
+        );
+        assert_eq!(
+            decode_proxy_body("  \n\t")
+                .expect("whitespace body should decode"),
+            json!({ "ok": true })
+        );
+    }
+
+    #[test]
+    fn non_empty_body_decodes_as_json() {
+        assert_eq!(
+            decode_proxy_body("{\"id\": 7}").expect("json body should decode"),
+            json!({ "id": 7 })
+        );
+    }
+
+    #[test]
+    fn non_json_body_is_a_decode_error() {
+        match decode_proxy_body("not json") {
+            Err(GhProxyError::Decode(_)) => {}
+            other => panic!("expected decode error, got {:?}", other),
+        }
+    }
 }

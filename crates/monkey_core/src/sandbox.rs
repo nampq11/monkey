@@ -35,6 +35,45 @@ pub fn farm_dir(owner: &str, repo: &str, number: i64) -> String {
     hex_digest[..8].to_string()
 }
 
+// A `git clone --mirror` points its HEAD at the remote's default branch, so
+// that is where the repository's configured default branch can be read from.
+pub async fn resolve_default_branch(
+    workspaces_root: &Path,
+    repo_url: &str,
+    owner: &str,
+    repo: &str,
+) -> Result<String, SandboxError> {
+    let mirror = workspaces_root.join(format!("{}__{}.git", owner, repo));
+    let mirror_str = mirror
+        .to_str()
+        .ok_or_else(|| SandboxError::Io("workspace path is not valid UTF-8".to_string()))?;
+
+    if !mirror.exists() {
+        std::fs::create_dir_all(workspaces_root).map_err(|e| SandboxError::Io(e.to_string()))?;
+        run_git_cmd(&["clone", "--mirror", repo_url, mirror_str]).await?;
+    }
+
+    let head = run_git_cmd(&["-C", mirror_str, "symbolic-ref", "--short", "HEAD"])
+        .await
+        .map_err(|error| {
+            SandboxError::CommandFailed(format!(
+                "failed to resolve the default branch of {} from the mirror at {}: {}",
+                repo_url,
+                mirror.display(),
+                error
+            ))
+        })?;
+    let branch = head.trim().to_string();
+    if branch.is_empty() {
+        return Err(SandboxError::CommandFailed(format!(
+            "mirror at {} has no default branch for repository {}",
+            mirror.display(),
+            repo_url
+        )));
+    }
+    Ok(branch)
+}
+
 pub async fn ensure_workspace(
     workspaces_root: &Path,
     repo_url: &str,
@@ -218,5 +257,46 @@ mod tests {
             fs::read_to_string(second.join("state.txt")).expect("failed to read state file"),
             "revision-2\n"
         );
+    }
+
+    #[tokio::test]
+    async fn resolves_default_branch_and_prepares_workspace_for_non_main_repository() {
+        let upstream_root = tempfile::tempdir().expect("failed to create upstream tempdir");
+        let upstream = upstream_root.path().join("upstream");
+        run_test_git(upstream_root.path(), &["init", "-b", "master", "upstream"]).await;
+        commit_file(&upstream, "state.txt", "on-master\n", "revision 1").await;
+
+        let workspaces = tempfile::tempdir().expect("failed to create workspaces tempdir");
+        let repo_url = upstream.to_str().expect("upstream path is UTF-8");
+
+        let resolved = resolve_default_branch(workspaces.path(), repo_url, "acme", "widgets")
+            .await
+            .expect("default branch resolution must succeed");
+        assert_eq!(resolved, "master");
+
+        let worktree =
+            ensure_workspace(workspaces.path(), repo_url, "acme", "widgets", 1, &resolved)
+                .await
+                .expect("workspace preparation must succeed for a master-default repository");
+        assert_eq!(
+            fs::read_to_string(worktree.join("state.txt")).expect("failed to read state file"),
+            "on-master\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolves_main_as_default_branch_when_configured() {
+        let upstream_root = tempfile::tempdir().expect("failed to create upstream tempdir");
+        let upstream = upstream_root.path().join("upstream");
+        run_test_git(upstream_root.path(), &["init", "-b", "main", "upstream"]).await;
+        commit_file(&upstream, "state.txt", "on-main\n", "revision 1").await;
+
+        let workspaces = tempfile::tempdir().expect("failed to create workspaces tempdir");
+        let repo_url = upstream.to_str().expect("upstream path is UTF-8");
+
+        let resolved = resolve_default_branch(workspaces.path(), repo_url, "acme", "widgets")
+            .await
+            .expect("default branch resolution must succeed");
+        assert_eq!(resolved, "main");
     }
 }

@@ -9,7 +9,9 @@ use tokio::sync::{Mutex, Semaphore};
 use monkey_core::config::Settings;
 use monkey_core::db::{Event, Store, StoreError};
 use monkey_core::dispatch::{TaskKind, classify_and_build_task};
-use monkey_core::sandbox::{SandboxError, cleanup_workspace, ensure_workspace};
+use monkey_core::sandbox::{
+    SandboxError, cleanup_workspace, ensure_workspace, resolve_default_branch,
+};
 use monkey_engine::adapters::{EngineAdapter, EngineError, Outcome, RunParams};
 use monkey_github::gh_writeback::{RepoRef, write_back};
 use monkey_github::host_tools::GhProxyError;
@@ -155,14 +157,21 @@ async fn handle_event<A: EngineAdapter + ?Sized>(
         repo_ref.owner, repo_ref.repo
     );
 
-    // 1. Sandbox checkout
+    // 1. Sandbox checkout, based on the repository's configured default branch
+    let default_branch = resolve_default_branch(
+        workspaces_root,
+        &repo_url,
+        &repo_ref.owner,
+        &repo_ref.repo,
+    )
+    .await?;
     let worktree = ensure_workspace(
         workspaces_root,
         &repo_url,
         &repo_ref.owner,
         &repo_ref.repo,
         repo_ref.number,
-        "main",
+        &default_branch,
     )
     .await?;
 
@@ -188,7 +197,16 @@ async fn handle_event<A: EngineAdapter + ?Sized>(
     write_outcome(&session_dir, &outcome, task.kind).await?;
 
     // 4. Write back to GitHub
-    write_back(&outcome, task.kind, &repo_ref, store, &worktree, settings).await?;
+    write_back(
+        &outcome,
+        task.kind,
+        &repo_ref,
+        store,
+        &worktree,
+        &default_branch,
+        settings,
+    )
+    .await?;
 
     store
         .done(&row.delivery_id, Some(&session_dir.to_string_lossy()))

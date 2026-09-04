@@ -149,6 +149,16 @@ async fn handle_event<A: EngineAdapter + ?Sized>(
         }
     };
 
+    // GitHub includes the repository's default branch in every webhook
+    // payload; fall back to "main" only for malformed payloads so the
+    // sandbox base and PR base stay consistent with each other.
+    let default_branch = payload
+        .get("repository")
+        .and_then(|repository| repository.get("default_branch"))
+        .and_then(|branch| branch.as_str())
+        .filter(|branch| !branch.is_empty())
+        .unwrap_or("main");
+
     let workspaces_root = Path::new(&settings.workspaces_root);
     let repo_url = format!(
         "https://github.com/{}/{}.git",
@@ -162,7 +172,7 @@ async fn handle_event<A: EngineAdapter + ?Sized>(
         &repo_ref.owner,
         &repo_ref.repo,
         repo_ref.number,
-        "main",
+        default_branch,
     )
     .await?;
 
@@ -188,7 +198,16 @@ async fn handle_event<A: EngineAdapter + ?Sized>(
     write_outcome(&session_dir, &outcome, task.kind).await?;
 
     // 4. Write back to GitHub
-    write_back(&outcome, task.kind, &repo_ref, store, &worktree, settings).await?;
+    write_back(
+        &outcome,
+        task.kind,
+        &repo_ref,
+        store,
+        &worktree,
+        settings,
+        default_branch,
+    )
+    .await?;
 
     store
         .done(&row.delivery_id, Some(&session_dir.to_string_lossy()))

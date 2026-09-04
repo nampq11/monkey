@@ -32,6 +32,7 @@ pub async fn write_back(
     store: &Store,
     worktree: &Path,
     settings: &Settings,
+    base_branch: &str,
 ) -> Result<Value, GhProxyError> {
     let proxy = GHProxy::new(
         &settings.gh_proxy_url,
@@ -41,7 +42,7 @@ pub async fn write_back(
     )?;
 
     match kind {
-        TaskKind::Fix => open_pr_if_gated(&proxy, outcome, repo_ref, worktree).await,
+        TaskKind::Fix => open_pr_if_gated(&proxy, outcome, repo_ref, worktree, base_branch).await,
         TaskKind::Answer | TaskKind::Comment | TaskKind::Invalid => {
             let body = if !outcome.comment.is_empty() {
                 &outcome.comment
@@ -60,6 +61,7 @@ pub async fn open_pr_if_gated(
     outcome: &Outcome,
     repo_ref: &RepoRef,
     worktree: &Path,
+    base_branch: &str,
 ) -> Result<Value, GhProxyError> {
     let body = if !outcome.pr_body.is_empty() {
         &outcome.pr_body
@@ -93,7 +95,7 @@ pub async fn open_pr_if_gated(
         .open_pull_request(json!({
             "title": title,
             "head": branch,
-            "base": "main",
+            "base": base_branch,
             "body": body
         }))
         .await;

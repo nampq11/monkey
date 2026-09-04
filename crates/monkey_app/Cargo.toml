@@ -1,0 +1,34 @@
+[package]
+name = "monkey_app"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Self-hosted GitHub issue triage bot"
+
+[lib]
+path = "src/monkey_app.rs"
+
+# The package is named after its directory, but the binary is the user-facing
+# command name and both Dockerfiles COPY target/release/monkey. Declaring it
+# explicitly keeps `monkey` as the command while the crate follows the
+# directory == package == identifier rule used workspace-wide.
+[[bin]]
+name = "monkey"
+path = "src/main.rs"
+
+[dependencies]
+monkey_core = { workspace = true }
+monkey_engine = { workspace = true }
+monkey_github = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tower = { workspace = true }
+http-body-util = { workspace = true }

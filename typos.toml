@@ -1,0 +1,16 @@
+# typos configuration.
+# Reference: https://github.com/crate-ci/typos/blob/master/docs/reference.md
+#
+# typos honours .gitignore by default (ignore-files = true), so target/, .venv/,
+# .pytest_cache/, .pi/ and .env are already skipped. This file only records the
+# deltas from that behaviour and why each one is needed.
+
+[files]
+# The default skips every dot-prefixed path, which silently drops `.rules`
+# (12 KB of hand-written prose that every agent session reads) from the check.
+# Turning this off re-exposes .rules; the exclusions below keep that from
+# turning CI output into a dump of whatever happens to live in a dotfile.
+ignore-hidden = false
+# Defence in depth for secrets: .gitignore covers these today, but a stray edit
+# there must not be the only thing standing between `.env` and the logs.
+extend-exclude = [".env", "*.env", ".git"]

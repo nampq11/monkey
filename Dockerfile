@@ -1,38 +1,31 @@
 # Multi-stage build for monkey orchestrator: Rust binary on Node 22 (~250MB)
-FROM rust:alpine AS builder
-
+FROM rust:alpine AS chef
 RUN apk add --no-cache musl-dev gcc git
-
+# Pinned so dependency pre-building stays reproducible across base image updates.
+RUN cargo install cargo-chef --version 0.1.78 --locked
 WORKDIR /app
 
-# Copy every workspace manifest first so dependency compilation is cached in
-# its own layer; the workspace members must all exist or cargo refuses to load.
-COPY Cargo.toml Cargo.lock ./
-COPY crates/monkey-core/Cargo.toml crates/monkey-core/
-COPY crates/monkey-engine/Cargo.toml crates/monkey-engine/
-COPY crates/monkey-github/Cargo.toml crates/monkey-github/
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
 
-# Stub the library roots, build deps, then drop the stubs. The real sources
-# are layered on top and only the workspace crates recompile.
-RUN mkdir -p src crates/monkey-core/src crates/monkey-engine/src crates/monkey-github/src && \
-    echo "fn main() {}" > src/main.rs && \
-    echo "" > src/monkey.rs && \
-    echo "" > crates/monkey-core/src/monkey_core.rs && \
-    echo "" > crates/monkey-engine/src/monkey_engine.rs && \
-    echo "" > crates/monkey-github/src/monkey_github.rs && \
-    cargo build --release && \
-    rm -rf src crates/*/src
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+# Compile dependencies in their own layer; only manifest changes invalidate it.
+RUN cargo chef cook --release --recipe-path recipe.json
 
-COPY src ./src
-COPY crates ./crates
-RUN find src crates -name "*.rs" -exec touch {} + && cargo build --release
+COPY . .
+RUN cargo build --release
 
 # Runtime image: Node 22 on Alpine with git and pi coding agent engine
 FROM node:22-alpine
 
 RUN apk add --no-cache git ca-certificates
 
-RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+# Pinned: monkey speaks pi's JSON-lines RPC contract, and an unpinned engine
+# lets a protocol change reach production untested. Bumps are deliberate and
+# must keep the protocol contract test green.
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.84.4
 
 COPY --from=builder /app/target/release/monkey /usr/local/bin/monkey
 

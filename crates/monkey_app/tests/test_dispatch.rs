@@ -90,3 +90,37 @@ fn test_closed_issue_is_skipped() {
     payload["issue"]["state"] = json!("closed");
     assert!(classify_and_build_task("issues", &payload).is_none());
 }
+
+#[test]
+fn test_issue_comment_body_is_included_in_prompt() {
+    let payload = json!({
+        "action": "created",
+        "issue": {
+            "title": "App crashes on save",
+            "body": "it dies when I hit save",
+            "state": "open",
+            "labels": [{"name": "bug"}]
+        },
+        "comment": {"body": "FOLLOW_UP_MARKER it only happens for files over 1GB"}
+    });
+    let task = classify_and_build_task("issue_comment", &payload).unwrap();
+    assert!(task.prompt.contains("FOLLOW_UP_MARKER"));
+    // The original report stays available for context.
+    assert!(task.prompt.contains("it dies when I hit save"));
+}
+
+#[test]
+fn test_pull_request_review_body_is_included_in_prompt() {
+    let payload = json!({
+        "action": "submitted",
+        "pull_request": {
+            "title": "App crashes on save",
+            "body": "it dies when I hit save",
+            "state": "open",
+            "labels": []
+        },
+        "review": {"body": "REVIEW_MARKER the crash is in save_dialog()"}
+    });
+    let task = classify_and_build_task("pull_request_review", &payload).unwrap();
+    assert!(task.prompt.contains("REVIEW_MARKER"));
+}

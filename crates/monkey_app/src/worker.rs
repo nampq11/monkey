@@ -208,6 +208,19 @@ async fn handle_event<A: EngineAdapter + ?Sized>(
     ));
     let model = settings.models().first().cloned().unwrap_or_default();
 
+    // Excluding the current delivery id keeps this pending event from being
+    // returned as its own prior session; only an earlier event that recorded
+    // a session means the pi session continues instead of starting over.
+    let has_prior_session = store
+        .prior_session_dir(
+            &repo_ref.owner,
+            &repo_ref.repo,
+            repo_ref.number,
+            &row.delivery_id,
+        )
+        .await?
+        .is_some();
+
     let params = RunParams {
         prompt: &task.prompt,
         worktree: &worktree,
@@ -217,7 +230,11 @@ async fn handle_event<A: EngineAdapter + ?Sized>(
         provider: &settings.provider,
         timeout: Duration::from_secs(3600),
     };
-    let outcome = adapter.run(params).await?;
+    let outcome = if has_prior_session {
+        adapter.resume(params).await?
+    } else {
+        adapter.run(params).await?
+    };
 
     // 3. Persist outcome
     write_outcome(&session_dir, &outcome, task.kind).await?;

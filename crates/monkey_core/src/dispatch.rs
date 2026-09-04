@@ -51,7 +51,7 @@ pub fn classify_and_build_task(event_type: &str, payload: &Value) -> Option<Task
     }
 
     let title = issue.get("title").and_then(|t| t.as_str()).unwrap_or("");
-    let body = issue.get("body").and_then(|b| b.as_str()).unwrap_or("");
+    let issue_body = issue.get("body").and_then(|b| b.as_str()).unwrap_or("");
     let labels: Vec<String> = issue
         .get("labels")
         .and_then(|l| l.as_array())
@@ -66,12 +66,27 @@ pub fn classify_and_build_task(event_type: &str, payload: &Value) -> Option<Task
         })
         .unwrap_or_default();
 
+    // Follow-up events carry the new user text in `comment.body`
+    // (issue_comment) or `review.body` (pull_request_review), not in the
+    // issue/PR body; without it the bot only sees the original report and
+    // loses the actual follow-up request.
+    let follow_up = payload
+        .get("comment")
+        .and_then(|comment| comment.get("body"))
+        .or_else(|| payload.get("review").and_then(|review| review.get("body")))
+        .and_then(|body| body.as_str())
+        .filter(|body| !body.trim().is_empty());
+    let body = match follow_up {
+        Some(text) => format!("{}\n\nFollow-up from the thread:\n{}", issue_body, text),
+        None => issue_body.to_string(),
+    };
+
     let combined = format!("{}\n{}", title, body).to_lowercase();
 
     if labels.iter().any(|l| l == "question") || title.contains('?') {
         return Some(task(
             TaskKind::Answer,
-            question_prompt(title, body),
+            question_prompt(title, &body),
             &["question"],
         ));
     }
@@ -79,7 +94,7 @@ pub fn classify_and_build_task(event_type: &str, payload: &Value) -> Option<Task
     if labels.iter().any(|l| l == "invalid") {
         return Some(task(
             TaskKind::Invalid,
-            invalid_prompt(title, body),
+            invalid_prompt(title, &body),
             &["invalid"],
         ));
     }
@@ -87,7 +102,7 @@ pub fn classify_and_build_task(event_type: &str, payload: &Value) -> Option<Task
     if labels.iter().any(|l| l == "duplicate") {
         return Some(task(
             TaskKind::Invalid,
-            duplicate_prompt(title, body),
+            duplicate_prompt(title, &body),
             &["duplicate"],
         ));
     }
@@ -114,7 +129,7 @@ pub fn classify_and_build_task(event_type: &str, payload: &Value) -> Option<Task
         let label = if is_bug { "bug" } else { "documentation" };
         return Some(task(
             TaskKind::Fix,
-            fix_prompt(title, body, number),
+            fix_prompt(title, &body, number),
             &[label],
         ));
     }
@@ -132,7 +147,7 @@ pub fn classify_and_build_task(event_type: &str, payload: &Value) -> Option<Task
     if is_enh {
         return Some(task(
             TaskKind::Comment,
-            enhancement_prompt(title, body),
+            enhancement_prompt(title, &body),
             &["enhancement"],
         ));
     }
@@ -140,7 +155,7 @@ pub fn classify_and_build_task(event_type: &str, payload: &Value) -> Option<Task
     // Fallback: enhancement-ish default (comment only).
     Some(task(
         TaskKind::Comment,
-        enhancement_prompt(title, body),
+        enhancement_prompt(title, &body),
         &[],
     ))
 }

@@ -253,6 +253,79 @@ async fn send_line(stdin: &mut tokio::process::ChildStdin, obj: &Value) -> Resul
     Ok(())
 }
 
+/// Formats and logs a streamed event from the pi engine child process.
+fn log_stream_event(raw: &Value) {
+    let event_type = raw.get("type").and_then(Value::as_str).unwrap_or("");
+    match event_type {
+        "tool_execution_start" => {
+            let tool = raw
+                .get("toolName")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            if let Some(command) = raw
+                .get("args")
+                .and_then(|arguments| arguments.get("command"))
+                .and_then(Value::as_str)
+            {
+                let display_command = if command.len() > 120 {
+                    format!("{}...", &command[..120])
+                } else {
+                    command.to_string()
+                };
+                tracing::info!(tool = %tool, command = %display_command, "pi starting tool");
+            } else if let Some(path) = raw
+                .get("args")
+                .and_then(|arguments| arguments.get("path"))
+                .and_then(Value::as_str)
+            {
+                tracing::info!(tool = %tool, path = %path, "pi starting tool");
+            } else {
+                tracing::info!(tool = %tool, "pi starting tool");
+            }
+        }
+        "tool_execution_end" => {
+            let tool = raw
+                .get("toolName")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let is_error = raw.get("isError").and_then(Value::as_bool).unwrap_or(false);
+            if is_error {
+                tracing::warn!(tool = %tool, "pi tool failed");
+            } else {
+                tracing::info!(tool = %tool, "pi tool completed");
+            }
+        }
+        "agent_start" => {
+            tracing::info!("pi agent started turn");
+        }
+        "agent_end" => {
+            tracing::info!("pi agent turn ended");
+        }
+        "agent_settled" => {
+            tracing::info!("pi agent settled");
+        }
+        "auto_retry_start" => {
+            tracing::warn!("pi automatic retry started");
+        }
+        "auto_retry_end" => {
+            if raw.get("success").and_then(Value::as_bool) == Some(false) {
+                let error = raw
+                    .get("finalError")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                tracing::error!(error = %error, "pi automatic retry ended in failure");
+            }
+        }
+        "thinking_start" => {
+            tracing::info!("pi started thinking...");
+        }
+        "thinking_end" => {
+            tracing::info!("pi finished thinking");
+        }
+        _ => {}
+    }
+}
+
 /// Consumes events until pi reports the session has settled.
 ///
 /// The `Ok` payload is pi's stated reason for exhausting its automatic
@@ -268,6 +341,7 @@ async fn drain_until_settled(
     let mut terminal_error = None;
     loop {
         let (val, event) = next_json_event(lines, deadline, "agent_settled", "event").await?;
+        log_stream_event(&val);
         raw_events.push(val);
         match event {
             PiEvent::AgentSettled => {

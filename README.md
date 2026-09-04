@@ -1,3 +1,5 @@
+> [!IMPORTANT]
+> Remove this line to confirm you've reviewed this PR before submitting.
 # monkey
 
 Self-hosted GitHub triage bot. Drives a coding-agent engine (default: **pi**) per-issue against a git worktree, then writes back to GitHub through a token-holding sidecar. Full roboomp behavior: classify issue, answer questions, fix bugs, open PRs.

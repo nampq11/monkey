@@ -10,6 +10,7 @@ services:
       # supplies GITHUB_TOKEN for the proxy; override it to empty here so the
       # orchestrator's mode-exclusive auth check doesn't see both proxy + PAT.
       GITHUB_TOKEN: ""
+      RUST_LOG: "info"
     command: ["serve"]
     volumes:
       - monkey-data:/data
@@ -39,6 +40,7 @@ services:
     environment:
       GITHUB_TOKEN: ${GITHUB_TOKEN}
       MONKEY_GH_PROXY_HMAC_KEY: ${MONKEY_GH_PROXY_HMAC_KEY}
+      RUST_LOG: "info"
     command: ["gh-proxy"]
     volumes:
       # gh-proxy runs `git push` on the issue worktrees, so it needs the same

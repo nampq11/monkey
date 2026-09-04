@@ -94,17 +94,25 @@ pub async fn open_pr_if_gated(
     // Check if a pull request for this branch already exists (open or merged)
     // to avoid creating duplicate or conflicting pull requests.
     let head_filter = format!("{}:{}", repo_ref.owner, branch);
-    if let Ok(mut pulls) = proxy
+    if let Ok(pulls) = proxy
         .list_pull_requests(Some(&head_filter), Some("all"))
         .await
     {
-        if pulls.as_array().is_none_or(|list| list.is_empty())
-            && let Ok(branch_pulls) = proxy.list_pull_requests(Some(branch), Some("all")).await
-        {
-            pulls = branch_pulls;
-        }
+        let matching_pr = pulls.as_array().and_then(|list| {
+            list.iter().find(|pr| {
+                if let Some(ref_name) = pr
+                    .get("head")
+                    .and_then(|head| head.get("ref"))
+                    .and_then(Value::as_str)
+                {
+                    ref_name == branch
+                } else {
+                    true
+                }
+            })
+        });
 
-        if let Some(existing_pr) = pulls.as_array().and_then(|list| list.first()) {
+        if let Some(existing_pr) = matching_pr {
             let is_merged = existing_pr
                 .get("merged_at")
                 .and_then(Value::as_str)
@@ -156,14 +164,24 @@ pub async fn open_pr_if_gated(
             && body.contains("already exists") =>
         {
             let head_filter = format!("{}:{}", repo_ref.owner, branch);
-            let mut pulls = proxy
+            let pulls = proxy
                 .list_pull_requests(Some(&head_filter), Some("open"))
                 .await?;
-            if pulls.as_array().is_none_or(|list| list.is_empty()) {
-                pulls = proxy.list_pull_requests(Some(branch), Some("open")).await?;
-            }
+            let matching_pr = pulls.as_array().and_then(|list| {
+                list.iter().find(|pr| {
+                    if let Some(ref_name) = pr
+                        .get("head")
+                        .and_then(|head| head.get("ref"))
+                        .and_then(Value::as_str)
+                    {
+                        ref_name == branch
+                    } else {
+                        true
+                    }
+                })
+            });
 
-            if let Some(existing_pr) = pulls.as_array().and_then(|list| list.first()) {
+            if let Some(existing_pr) = matching_pr {
                 if let Some(pull_number) = existing_pr.get("number").and_then(Value::as_i64) {
                     tracing::info!(
                         "pull request #{} already exists for branch {}, updating title and body",

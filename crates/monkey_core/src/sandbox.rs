@@ -59,7 +59,20 @@ pub async fn ensure_workspace(
             "workspace path is not valid UTF-8".to_string(),
         ));
     };
-    if !mirror.exists() {
+    if mirror.exists() {
+        // Refresh an existing mirror so new worktrees are based on the
+        // remote's current default branch instead of the state at clone time.
+        run_git_cmd(&["-C", mirror_str, "remote", "update", "--prune"])
+            .await
+            .map_err(|error| {
+                SandboxError::CommandFailed(format!(
+                    "failed to refresh existing mirror at {} for repository {}: {}",
+                    mirror.display(),
+                    repo_url,
+                    error
+                ))
+            })?;
+    } else {
         // Cloning a large mirror can take minutes; the async git command keeps
         // the Tokio worker free while git runs.
         run_git_cmd(&["clone", "--mirror", repo_url, mirror_str]).await?;
@@ -141,4 +154,69 @@ async fn run_git_cmd(args: &[&str]) -> Result<String, SandboxError> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    async fn run_test_git(repo: &Path, args: &[&str]) {
+        let mut all_args = vec!["-C", repo.to_str().expect("test repo path is UTF-8")];
+        all_args.extend_from_slice(args);
+        run_git_cmd(&all_args)
+            .await
+            .expect("test git command must succeed");
+    }
+
+    async fn commit_file(repo: &Path, file: &str, contents: &str, message: &str) {
+        fs::write(repo.join(file), contents).expect("failed to write test file");
+        run_test_git(repo, &["add", file]).await;
+        run_test_git(
+            repo,
+            &[
+                "-c",
+                "user.name=monkey",
+                "-c",
+                "user.email=monkey@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                message,
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn refreshes_existing_mirror_when_remote_default_branch_advances() {
+        let upstream_root = tempfile::tempdir().expect("failed to create upstream tempdir");
+        let upstream = upstream_root.path().join("upstream");
+        run_test_git(upstream_root.path(), &["init", "-b", "main", "upstream"]).await;
+        commit_file(&upstream, "state.txt", "revision-1\n", "revision 1").await;
+
+        let workspaces = tempfile::tempdir().expect("failed to create workspaces tempdir");
+        let repo_url = upstream.to_str().expect("upstream path is UTF-8");
+
+        let first = ensure_workspace(workspaces.path(), repo_url, "acme", "widgets", 1, "main")
+            .await
+            .expect("first workspace preparation must succeed");
+        assert_eq!(
+            fs::read_to_string(first.join("state.txt")).expect("failed to read state file"),
+            "revision-1\n"
+        );
+
+        // The remote default branch advances after the mirror was cloned.
+        commit_file(&upstream, "state.txt", "revision-2\n", "revision 2").await;
+
+        // A new issue for the same repository reuses the shared mirror.
+        let second = ensure_workspace(workspaces.path(), repo_url, "acme", "widgets", 2, "main")
+            .await
+            .expect("second workspace preparation must succeed");
+        assert_eq!(
+            fs::read_to_string(second.join("state.txt")).expect("failed to read state file"),
+            "revision-2\n"
+        );
+    }
 }

@@ -3,6 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 use thiserror::Error;
 
+use crate::autoclose;
 use crate::webhook::{WebhookState, app as webhook_app};
 use crate::worker::worker_loop;
 use monkey_core::config::Settings;
@@ -24,7 +25,7 @@ pub enum Commands {
     Serve,
     /// Run token-holding proxy service
     GhProxy,
-    /// Manually triage owner/repo#N
+    /// Print the latest stored event for an issue
     Triage { target: String },
     /// Show queue state
     Status,
@@ -54,6 +55,8 @@ async fn run_serve() -> Result<(), Box<dyn std::error::Error>> {
         adapter.clone(),
         settings.clone(),
     ));
+
+    tokio::spawn(autoclose::autoclose_loop(store.clone(), settings.clone()));
 
     let webhook_state = WebhookState { settings, store };
     let app = webhook_app(webhook_state);

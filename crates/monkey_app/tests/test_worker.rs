@@ -1,6 +1,6 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use monkey_app::adapters::{EngineAdapter, EngineError, Outcome, RunParams};
@@ -246,6 +246,122 @@ async fn follow_up_comment_resumes_existing_session() {
         adapter.runs.load(Ordering::SeqCst),
         0,
         "an issue with an existing session must not start a fresh run"
+    );
+
+    worker.abort();
+}
+
+async fn wait_for<F: Fn() -> bool>(condition: F, description: &str) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline {
+        if condition() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("timed out waiting for {description}");
+}
+
+fn unix_secs() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
+}
+
+/// Reads the scheduled auto-close of an issue straight from its table: a row
+/// whose window is still open is invisible to `due_autocloses`.
+fn scheduled_autoclose(store: &Store) -> Option<(String, f64)> {
+    store
+        .with_conn(|conn| {
+            let mut statement = conn
+                .prepare("SELECT author_login, close_at FROM issue_autoclose")
+                .ok()?;
+            let mut rows = statement.query([]).ok()?;
+            // Explicitly matching rather than `?`-chaining keeps the
+            // "missing row" and "broken row" cases equally uninteresting.
+            let row = match rows.next() {
+                Ok(Some(row)) => row,
+                _ => return None,
+            };
+            Some((row.get(0).ok()?, row.get(1).ok()?))
+        })
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn answered_question_schedules_an_autoclose() {
+    let workspaces = tempdir().unwrap();
+    let sessions = tempdir().unwrap();
+    let worktree = workspaces.path().join("acme__widget__2").join("repo");
+    std::fs::create_dir_all(worktree.join(".git")).unwrap();
+
+    // The close is only scheduled once the answer is really on the issue, so
+    // the write-back target has to accept the comment.
+    let comments = Arc::new(Mutex::new(Vec::new()));
+    let recorded = comments.clone();
+    let app = axum::Router::new().route(
+        "/issues/acme/widget/2/comment",
+        axum::routing::post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+            let comments = recorded.clone();
+            async move {
+                comments.lock().unwrap().push(body);
+                axum::Json(json!({ "ok": true }))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let store = Store::new(workspaces.path().join("test.db")).unwrap();
+    let mut settings = base_settings(workspaces.path(), sessions.path());
+    settings.gh_proxy_url = format!("http://{}", address);
+    settings.gh_proxy_hmac_key = "hmac-key".to_string();
+    let adapter = Arc::new(RecordingAdapter {
+        runs: AtomicUsize::new(0),
+        resumes: AtomicUsize::new(0),
+    });
+
+    let scheduled_at = unix_secs();
+    let payload = json!({
+        "action": "opened",
+        "repository": {"default_branch": "main"},
+        "issue": {
+            "number": 2,
+            "title": "How do I enable the proxy?",
+            "body": "I cannot find the flag",
+            "state": "open",
+            "labels": [{"name": "question"}],
+            "user": {"login": "reporter"}
+        }
+    })
+    .to_string();
+    store
+        .enqueue("q1", "issues", "acme", "widget", 2, &payload)
+        .await
+        .unwrap();
+
+    let worker_store = store.clone();
+    let worker = tokio::spawn(worker_loop(worker_store, adapter.clone(), settings));
+    wait_for(
+        || !comments.lock().unwrap().is_empty(),
+        "the answer comment",
+    )
+    .await;
+    wait_for(
+        || scheduled_autoclose(&store).is_some(),
+        "the auto-close schedule",
+    )
+    .await;
+
+    let (author_login, close_at) = scheduled_autoclose(&store).unwrap();
+    assert_eq!(author_login, "reporter", "the author is who may veto");
+    assert!(
+        close_at >= scheduled_at + 4.0 * 3600.0,
+        "close_at {close_at} is not one default window after {scheduled_at}"
     );
 
     worker.abort();

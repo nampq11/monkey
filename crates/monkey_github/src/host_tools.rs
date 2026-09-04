@@ -155,6 +155,18 @@ impl GHProxy {
         self.call(reqwest::Method::PATCH, &path, Some(body)).await
     }
 
+    pub async fn close_issue(&self) -> Result<Value, GhProxyError> {
+        self.update_issue(json!({ "state": "closed" })).await
+    }
+
+    pub async fn list_issue_reactions(&self) -> Result<Value, GhProxyError> {
+        let path = format!(
+            "/issues/{}/{}/{}/reactions",
+            self.owner, self.repo, self.number
+        );
+        self.call(reqwest::Method::GET, &path, None).await
+    }
+
     pub async fn open_pull_request(&self, body: Value) -> Result<Value, GhProxyError> {
         let path = format!("/pulls/{}/{}", self.owner, self.repo);
         self.call(reqwest::Method::POST, &path, Some(body)).await
@@ -234,8 +246,7 @@ mod tests {
             empty_success_value()
         );
         assert_eq!(
-            decode_proxy_body("  \n\t")
-                .expect("whitespace body should decode"),
+            decode_proxy_body("  \n\t").expect("whitespace body should decode"),
             json!({ "ok": true })
         );
     }

@@ -46,6 +46,10 @@ pub fn app(state: GhProxyState) -> Router {
             post(add_issue_comment),
         )
         .route("/issues/{owner}/{repo}/{number}/labels", post(add_labels))
+        .route(
+            "/issues/{owner}/{repo}/{number}/reactions",
+            get(list_issue_reactions),
+        )
         .route("/issues/{owner}/{repo}/{number}", patch(update_issue))
         .route(
             "/pulls/{owner}/{repo}",
@@ -128,6 +132,19 @@ async fn add_labels(
         reqwest::Method::POST,
         &format!("/repos/{}/{}/issues/{}/labels", owner, repo, number),
         Some(body),
+    )
+    .await
+}
+
+async fn list_issue_reactions(
+    State(state): State<GhProxyState>,
+    Path((owner, repo, number)): Path<(String, String, i64)>,
+) -> Response {
+    call_gh(
+        &state,
+        reqwest::Method::GET,
+        &format!("/repos/{}/{}/issues/{}/reactions", owner, repo, number),
+        None,
     )
     .await
 }
@@ -408,8 +425,7 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("response body should be readable");
-        let value =
-            serde_json::from_slice(&body).expect("response body should be valid JSON");
+        let value = serde_json::from_slice(&body).expect("response body should be valid JSON");
         (status, value)
     }
 

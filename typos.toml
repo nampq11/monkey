@@ -1,9 +1,9 @@
 # typos configuration.
 # Reference: https://github.com/crate-ci/typos/blob/master/docs/reference.md
 #
-# typos honours .gitignore by default (ignore-files = true), so target/, .venv/,
-# .pytest_cache/, .pi/ and .env are already skipped. This file only records the
-# deltas from that behaviour and why each one is needed.
+# typos honours .gitignore by default (ignore-files = true), so target/, .pi/
+# and .env are already skipped. This file only records the deltas from that
+# behaviour and why each one is needed.
 
 [files]
 # The default skips every dot-prefixed path, which silently drops `.rules`

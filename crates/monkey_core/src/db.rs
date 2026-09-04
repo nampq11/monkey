@@ -83,8 +83,22 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     created_at REAL NOT NULL
 );
 
+-- Question issues that owe a GitHub close at `close_at`. `closed_at` stays
+-- NULL until the background task has acted (closed or skipped) on the row.
+CREATE TABLE IF NOT EXISTS issue_autoclose (
+    owner        TEXT NOT NULL,
+    repo         TEXT NOT NULL,
+    number       INTEGER NOT NULL,
+    author_login TEXT NOT NULL,
+    close_at     REAL NOT NULL,
+    closed_at    REAL,
+    created_at   REAL NOT NULL,
+    PRIMARY KEY (owner, repo, number)
+);
+
 CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
 CREATE INDEX IF NOT EXISTS idx_events_owner_repo_num ON events(owner, repo, number);
+CREATE INDEX IF NOT EXISTS idx_issue_autoclose_due ON issue_autoclose(closed_at, close_at);
 "#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +124,24 @@ pub struct ToolCall {
     pub tool: String,
     pub args: String,
     pub result: String,
+    pub created_at: f64,
+}
+
+/// A scheduled GitHub close for a `question` issue.
+///
+/// `author_login` is captured at schedule time from the webhook payload so the
+/// downvote check needs a single GitHub call instead of fetching the issue
+/// again just to learn who may veto the close.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoClose {
+    pub owner: String,
+    pub repo: String,
+    pub number: i64,
+    pub author_login: String,
+    /// Unix timestamp after which the issue may be closed.
+    pub close_at: f64,
+    /// Set once the background task closed the issue or skipped it.
+    pub closed_at: Option<f64>,
     pub created_at: f64,
 }
 
@@ -408,6 +440,100 @@ impl Store {
                 row.get(0)
             })?;
         Ok(rows.next().transpose()?)
+    }
+
+    /// Schedules (or re-schedules) the auto-close of a `question` issue.
+    ///
+    /// Re-scheduling clears `closed_at`, so a fresh answer on an issue whose
+    /// earlier window already ran gets a brand-new window rather than being
+    /// closed immediately.
+    pub async fn schedule_autoclose(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i64,
+        author_login: &str,
+        close_at: f64,
+    ) -> StoreResult<()> {
+        let store = self.clone();
+        let owner = owner.to_string();
+        let repo = repo.to_string();
+        let author_login = author_login.to_string();
+        run_db_task(move || {
+            store.schedule_autoclose_blocking(&owner, &repo, number, &author_login, close_at)
+        })
+        .await
+    }
+
+    fn schedule_autoclose_blocking(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i64,
+        author_login: &str,
+        close_at: f64,
+    ) -> StoreResult<()> {
+        let now = now_secs();
+        let conn = self.lock_conn()?;
+        conn.execute(
+            "INSERT INTO issue_autoclose (owner, repo, number, author_login, close_at, closed_at, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6) \
+             ON CONFLICT(owner, repo, number) \
+             DO UPDATE SET author_login=excluded.author_login, close_at=excluded.close_at, \
+                           closed_at=NULL",
+            params![owner, repo, number, author_login, close_at, now],
+        )?;
+        Ok(())
+    }
+
+    /// Auto-closes whose window has elapsed and that have not been acted on.
+    pub async fn due_autocloses(&self, limit: usize) -> StoreResult<Vec<AutoClose>> {
+        let store = self.clone();
+        run_db_task(move || store.due_autocloses_blocking(limit)).await
+    }
+
+    fn due_autocloses_blocking(&self, limit: usize) -> StoreResult<Vec<AutoClose>> {
+        let conn = self.lock_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT owner, repo, number, author_login, close_at, closed_at, created_at \
+             FROM issue_autoclose WHERE closed_at IS NULL AND close_at <= ?1 \
+             ORDER BY close_at LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![now_secs(), limit as i64], |row| {
+            Ok(AutoClose {
+                owner: row.get(0)?,
+                repo: row.get(1)?,
+                number: row.get(2)?,
+                author_login: row.get(3)?,
+                close_at: row.get(4)?,
+                closed_at: row.get(5)?,
+                created_at: row.get(6)?,
+            })
+        })?;
+
+        Ok(rows.collect::<SqlResult<Vec<AutoClose>>>()?)
+    }
+
+    /// Marks an auto-close as handled so it is never acted on twice.
+    pub async fn complete_autoclose(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i64,
+    ) -> StoreResult<()> {
+        let store = self.clone();
+        let owner = owner.to_string();
+        let repo = repo.to_string();
+        run_db_task(move || store.complete_autoclose_blocking(&owner, &repo, number)).await
+    }
+
+    fn complete_autoclose_blocking(&self, owner: &str, repo: &str, number: i64) -> StoreResult<()> {
+        let conn = self.lock_conn()?;
+        conn.execute(
+            "UPDATE issue_autoclose SET closed_at=?1 WHERE owner=?2 AND repo=?3 AND number=?4",
+            params![now_secs(), owner, repo, number],
+        )?;
+        Ok(())
     }
 
     pub async fn status_counts(&self) -> StoreResult<Vec<(String, i64)>> {

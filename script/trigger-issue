@@ -3,7 +3,7 @@ set -euo pipefail
 
 ISSUE_NUM="${1:-}"
 if [[ -z "$ISSUE_NUM" ]]; then
-    echo "Usage: $0 <issue_number>"
+    echo "Usage: $0 <issue_number> [owner/repo]"
     exit 1
 fi
 
@@ -13,7 +13,14 @@ if [[ -f .env ]]; then
 fi
 set +a
 
-REPO="nampq11/monkey"
+REPO="${2:-${MONKEY_TRIGGER_REPO:-nampq11/monkey}}"
+
+# The orchestrator silently drops events for repos outside the allowlist
+# (it answers ok:true with a "repo not in allowlist" reason), so warn here.
+if [[ -n "${MONKEY_REPO_ALLOWLIST:-}" ]] && ! grep -qw -- "$REPO" <<<"$MONKEY_REPO_ALLOWLIST"; then
+    echo "Warning: ${REPO} is not in MONKEY_REPO_ALLOWLIST; the orchestrator will silently skip this event." >&2
+fi
+
 echo "Fetching issue #${ISSUE_NUM} from ${REPO}..."
 issue_json=$(gh api "repos/${REPO}/issues/${ISSUE_NUM}")
 repo_json=$(gh api "repos/${REPO}")

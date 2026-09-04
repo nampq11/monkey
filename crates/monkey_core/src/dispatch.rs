@@ -84,11 +84,15 @@ pub fn classify_and_build_task(event_type: &str, payload: &Value) -> Option<Task
     let combined = format!("{}\n{}", title, body).to_lowercase();
 
     if labels.iter().any(|l| l == "question") || title.contains('?') {
-        return Some(task(
+        // Only questions are closed automatically; every other answer or
+        // comment stays open for the maintainer to act on.
+        let mut answer = task(
             TaskKind::Answer,
             question_prompt(title, &body),
             &["question"],
-        ));
+        );
+        answer.autoclose = true;
+        return Some(answer);
     }
 
     if labels.iter().any(|l| l == "invalid") {

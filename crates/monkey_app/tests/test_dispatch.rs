@@ -124,3 +124,43 @@ fn test_pull_request_review_body_is_included_in_prompt() {
     let task = classify_and_build_task("pull_request_review", &payload).unwrap();
     assert!(task.prompt.contains("REVIEW_MARKER"));
 }
+
+#[test]
+fn test_only_questions_are_scheduled_for_autoclose() {
+    let question = make_payload("How do I X?", "something", Some(vec!["question"]));
+    assert!(
+        classify_and_build_task("issues", &question)
+            .unwrap()
+            .autoclose
+    );
+
+    // A title question mark is the other question signal.
+    let titled = make_payload("How does X work?", "context", None);
+    assert!(
+        classify_and_build_task("issues", &titled)
+            .unwrap()
+            .autoclose
+    );
+
+    let bug = make_payload("App crashes", "boost crash error", None);
+    assert!(!classify_and_build_task("issues", &bug).unwrap().autoclose);
+
+    let enhancement = make_payload("Add dark mode", "please feature", None);
+    assert!(
+        !classify_and_build_task("issues", &enhancement)
+            .unwrap()
+            .autoclose
+    );
+}
+
+#[test]
+fn test_followup_without_text_adds_nothing_to_the_prompt() {
+    // A review that only leaves line comments carries no top-level body.
+    let mut payload = make_payload("App crashes", "crash error", None);
+    payload["review"] = json!({ "body": null });
+
+    let original = classify_and_build_task("issues", &payload).unwrap();
+    payload["action"] = json!("submitted");
+    let resumed = classify_and_build_task("pull_request_review", &payload).unwrap();
+    assert_eq!(original.prompt, resumed.prompt);
+}

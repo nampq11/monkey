@@ -306,6 +306,78 @@ fn write_session(directory: &Path, contents: &str) -> std::path::PathBuf {
     path
 }
 
+// Echoes the first request the adapter writes into first-request.txt, consumes
+// `reads` requests, then settles. The count matters: resume writes
+// switch_session before the prompt, so a fake that stops reading after the
+// first line drifts out of sync with the adapter and exits while the adapter is
+// still writing, which surfaces as an intermittent broken pipe.
+#[cfg(unix)]
+fn echo_script(reads: usize) -> String {
+    let mut script = String::from("#!/bin/sh\n");
+    for index in 0..reads {
+        script.push_str(&format!("read request{index}\n"));
+        if index == 0 {
+            script.push_str("printf '%s' \"$request0\" > first-request.txt\n");
+        }
+    }
+    script.push_str(&format!(
+        "printf '%s\\n' '{{\"type\":\"agent_settled\"}}'\n{RPC_TAIL}"
+    ));
+    script
+}
+
+// The resume path must hand pi the transcript to continue before the prompt,
+// otherwise pi starts a brand-new session and the follow-up loses the whole
+// earlier conversation.
+#[cfg(unix)]
+#[tokio::test]
+async fn resume_switches_into_the_latest_session_transcript() {
+    let directory = tempdir().unwrap();
+    let script = fake_pi(&echo_script(2), directory.path());
+    let session_dir = directory.path().join("session");
+    fs::create_dir_all(&session_dir).unwrap();
+    fs::write(session_dir.join("aaa.jsonl"), "{\"role\":\"user\"}").unwrap();
+    fs::write(session_dir.join("zzz.jsonl"), "{\"role\":\"user\"}").unwrap();
+    let adapter = PiAdapter::new(script.to_str());
+
+    let outcome = adapter
+        .resume(params(&session_dir, directory.path()))
+        .await
+        .expect("resume should drive a settled session");
+
+    let first_request = fs::read_to_string(directory.path().join("first-request.txt")).unwrap();
+    let request: serde_json::Value =
+        serde_json::from_str(&first_request).expect("first request is a JSON line");
+    assert_eq!(request["type"], "switch_session");
+    assert_eq!(
+        request["sessionPath"],
+        session_dir.join("zzz.jsonl").to_string_lossy().as_ref(),
+        "the newest transcript must be the one resumed"
+    );
+    assert_eq!(outcome.status, OutcomeStatus::Ok);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn resume_without_a_transcript_still_runs() {
+    // A recorded session whose directory was wiped must degrade to a normal
+    // run rather than failing the follow-up event.
+    let directory = tempdir().unwrap();
+    let script = fake_pi(&echo_script(1), directory.path());
+    let session_dir = directory.path().join("session");
+    let adapter = PiAdapter::new(script.to_str());
+
+    let outcome = adapter
+        .resume(params(&session_dir, directory.path()))
+        .await
+        .expect("a missing transcript is not a fatal resume error");
+
+    let first_request = fs::read_to_string(directory.path().join("first-request.txt")).unwrap();
+    let request: serde_json::Value = serde_json::from_str(&first_request).unwrap();
+    assert_eq!(request["type"], "prompt");
+    assert_eq!(outcome.status, OutcomeStatus::Ok);
+}
+
 #[test]
 fn transcript_with_a_complete_final_record_is_healthy() {
     let directory = tempdir().unwrap();

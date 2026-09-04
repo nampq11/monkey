@@ -165,3 +165,64 @@ async fn test_store_missing_parent_dir_is_created() {
 
     assert!(db_path.exists());
 }
+
+#[tokio::test]
+async fn test_autoclose_is_only_due_once() {
+    let dir = tempdir().unwrap();
+    let store = Store::new(dir.path().join("test.db")).unwrap();
+
+    store
+        .schedule_autoclose("acme", "widget", 7, "reporter", 1000.0)
+        .await
+        .unwrap();
+
+    let due = store.due_autocloses(10).await.unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].author_login, "reporter");
+    assert_eq!(due[0].number, 7);
+    assert_eq!(due[0].closed_at, None);
+
+    store.complete_autoclose("acme", "widget", 7).await.unwrap();
+    assert!(store.due_autocloses(10).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_autoclose_reschedule_reopens_the_window() {
+    let dir = tempdir().unwrap();
+    let store = Store::new(dir.path().join("test.db")).unwrap();
+
+    store
+        .schedule_autoclose("acme", "widget", 7, "reporter", 1000.0)
+        .await
+        .unwrap();
+    store.complete_autoclose("acme", "widget", 7).await.unwrap();
+
+    // A later answer on the same issue starts a fresh window instead of being
+    // closed immediately because the previous one already ran.
+    store
+        .schedule_autoclose("acme", "widget", 7, "maintainer", 2000.0)
+        .await
+        .unwrap();
+
+    let due = store.due_autocloses(10).await.unwrap();
+    assert_eq!(due.len(), 1, "rescheduling must reopen the window");
+    assert_eq!(due[0].author_login, "maintainer");
+    assert_eq!(due[0].close_at, 2000.0);
+}
+
+#[tokio::test]
+async fn test_due_autocloses_orders_by_close_at_and_respects_limit() {
+    let dir = tempdir().unwrap();
+    let store = Store::new(dir.path().join("test.db")).unwrap();
+
+    for (number, close_at) in [(1, 300.0), (2, 100.0), (3, 200.0)] {
+        store
+            .schedule_autoclose("acme", "widget", number, "reporter", close_at)
+            .await
+            .unwrap();
+    }
+
+    let due = store.due_autocloses(2).await.unwrap();
+    let numbers: Vec<i64> = due.iter().map(|entry| entry.number).collect();
+    assert_eq!(numbers, vec![2, 3], "oldest window must be handled first");
+}

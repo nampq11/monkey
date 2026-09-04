@@ -157,7 +157,7 @@ pub fn parse_target(
 ) -> (Option<String>, Option<String>, Option<i64>) {
     if !matches!(
         event_type,
-        "issues" | "pull_request" | "issue_comment" | "pull_request_review"
+        "issues" | "issue_comment" | "pull_request_review"
     ) {
         return (None, None, None);
     }
@@ -183,6 +183,7 @@ pub fn parse_target(
 
     let number = payload
         .get("issue")
+        // review payloads carry the reviewed PR (and its number) under "pull_request"
         .or_else(|| payload.get("pull_request"))
         .or_else(|| payload.get("review"))
         .and_then(|item| item.get("number"))

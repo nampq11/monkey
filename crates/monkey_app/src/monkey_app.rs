@@ -2,6 +2,7 @@
 //! are re-exported from the workspace crates so the public
 //! `monkey_app::<module>` paths used by the integration tests stay stable.
 
+pub mod autoclose;
 pub mod cli;
 pub mod webhook;
 pub mod worker;

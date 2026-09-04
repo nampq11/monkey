@@ -14,6 +14,8 @@ use monkey_engine::adapters::{EngineAdapter, EngineError, Outcome, RunParams};
 use monkey_github::gh_writeback::{RepoRef, write_back};
 use monkey_github::host_tools::GhProxyError;
 
+use crate::autoclose;
+
 #[derive(Debug, Error)]
 pub enum WorkerError {
     #[error("failed to parse webhook payload: {0}")]
@@ -250,6 +252,12 @@ async fn handle_event<A: EngineAdapter + ?Sized>(
         default_branch,
     )
     .await?;
+
+    // Scheduled only once the answer is actually on the issue, so a question
+    // is never closed by a monkey comment that failed to post.
+    if task.autoclose {
+        autoclose::schedule_question_autoclose(store, &repo_ref, &payload, settings).await?;
+    }
 
     store
         .done(&row.delivery_id, Some(&session_dir.to_string_lossy()))

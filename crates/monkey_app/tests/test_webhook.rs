@@ -147,6 +147,30 @@ async fn test_webhook_skips_configured_bot_sender() {
 }
 
 #[tokio::test]
+async fn test_webhook_skips_pull_request_event() {
+    let (app, store, _dir) = setup_webhook_app();
+    let payload = json!({
+        "action": "synchronize",
+        "repository": {"name": "widget", "owner": {"login": "acme"}},
+        "pull_request": {"number": 44, "title": "Fix crash"}
+    });
+    let body = serde_json::to_vec(&payload).unwrap();
+    let signature = hmac_sign(SECRET, &body);
+    let request = Request::builder()
+        .method("POST")
+        .uri("/webhook/github")
+        .header("x-hub-signature-256", signature)
+        .header("x-github-delivery", "pr-delivery")
+        .header("x-github-event", "pull_request")
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(store.pending_events(10).await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn test_webhook_skips_github_bot_sender() {
     let (app, store, _dir) = setup_webhook_app();
     let payload = json!({

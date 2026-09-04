@@ -124,7 +124,12 @@ impl GHProxy {
             });
         }
 
-        Ok(serde_json::from_str(&text)?)
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            Ok(json!({ "ok": true }))
+        } else {
+            Ok(serde_json::from_str(trimmed)?)
+        }
     }
 
     pub async fn add_issue_comment(&self, body: &str) -> Result<Value, GhProxyError> {
@@ -157,6 +162,36 @@ impl GHProxy {
     pub async fn open_pull_request(&self, body: Value) -> Result<Value, GhProxyError> {
         let path = format!("/pulls/{}/{}", self.owner, self.repo);
         self.call(reqwest::Method::POST, &path, Some(body)).await
+    }
+
+    pub async fn list_pull_requests(
+        &self,
+        head: Option<&str>,
+        state: Option<&str>,
+    ) -> Result<Value, GhProxyError> {
+        let mut query = Vec::new();
+        if let Some(head) = head {
+            query.push(format!("head={}", head));
+        }
+        if let Some(state) = state {
+            query.push(format!("state={}", state));
+        }
+        let query_str = if query.is_empty() {
+            String::new()
+        } else {
+            format!("?{}", query.join("&"))
+        };
+        let path = format!("/pulls/{}/{}{}", self.owner, self.repo, query_str);
+        self.call(reqwest::Method::GET, &path, None).await
+    }
+
+    pub async fn update_pull_request(
+        &self,
+        pull_number: i64,
+        body: Value,
+    ) -> Result<Value, GhProxyError> {
+        let path = format!("/pulls/{}/{}/{}", self.owner, self.repo, pull_number);
+        self.call(reqwest::Method::PATCH, &path, Some(body)).await
     }
 
     pub async fn push(&self, worktree: &Path, branch: &str) -> Result<Value, GhProxyError> {

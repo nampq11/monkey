@@ -13,8 +13,8 @@ use tokio::process::Command;
 use monkey_core::hmac_auth::verify_internal_signature;
 
 const API: &str = "https://api.github.com";
-const CREDENTIAL_HELPER: &str =
-    "!f() { echo username=x-access-token; echo password=$GIT_TOKEN; }; f";
+const CREDENTIAL_HELPER_CONFIG: &str =
+    "credential.helper=!f() { echo username=x-access-token; echo password=$GIT_TOKEN; }; f";
 
 #[derive(Debug, Clone)]
 pub struct GhProxyState {
@@ -47,7 +47,11 @@ pub fn app(state: GhProxyState) -> Router {
         )
         .route("/issues/{owner}/{repo}/{number}/labels", post(add_labels))
         .route("/issues/{owner}/{repo}/{number}", patch(update_issue))
-        .route("/pulls/{owner}/{repo}", post(open_pull_request))
+        .route(
+            "/pulls/{owner}/{repo}",
+            get(list_pull_requests).post(open_pull_request),
+        )
+        .route("/pulls/{owner}/{repo}/{number}", patch(update_pull_request))
         .route(
             "/pulls/{owner}/{repo}/{number}/comments",
             post(add_pr_review_comment),
@@ -156,6 +160,35 @@ async fn open_pull_request(
     .await
 }
 
+async fn list_pull_requests(
+    State(state): State<GhProxyState>,
+    Path((owner, repo)): Path<(String, String)>,
+    uri: axum::http::Uri,
+) -> Response {
+    let query_suffix = uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
+    call_gh(
+        &state,
+        reqwest::Method::GET,
+        &format!("/repos/{}/{}/pulls{}", owner, repo, query_suffix),
+        None,
+    )
+    .await
+}
+
+async fn update_pull_request(
+    State(state): State<GhProxyState>,
+    Path((owner, repo, number)): Path<(String, String, i64)>,
+    Json(body): Json<Value>,
+) -> Response {
+    call_gh(
+        &state,
+        reqwest::Method::PATCH,
+        &format!("/repos/{}/{}/pulls/{}", owner, repo, number),
+        Some(body),
+    )
+    .await
+}
+
 async fn add_pr_review_comment(
     State(state): State<GhProxyState>,
     Path((owner, repo, number)): Path<(String, String, i64)>,
@@ -206,7 +239,7 @@ async fn git_push(State(state): State<GhProxyState>, Json(body): Json<Value>) ->
             "-c",
             "credential.helper=",
             "-c",
-            CREDENTIAL_HELPER,
+            CREDENTIAL_HELPER_CONFIG,
             "push",
             "-f",
             &remote,
@@ -281,14 +314,18 @@ async fn call_gh(
                     );
                 }
             };
-            let parsed_json = match serde_json::from_str::<Value>(&response_text) {
-                Ok(value) => value,
-                Err(decode_error) => {
-                    return github_error_response(
-                        upstream_failed,
-                        status,
-                        format!("malformed GitHub JSON response: {}", decode_error),
-                    );
+            let parsed_json = if response_text.trim().is_empty() {
+                json!({ "ok": true })
+            } else {
+                match serde_json::from_str::<Value>(&response_text) {
+                    Ok(value) => value,
+                    Err(decode_error) => {
+                        return github_error_response(
+                            upstream_failed,
+                            status,
+                            format!("malformed GitHub JSON response: {}", decode_error),
+                        );
+                    }
                 }
             };
 
@@ -302,6 +339,8 @@ async fn call_gh(
                     })),
                 )
                     .into_response()
+            } else if status == StatusCode::NO_CONTENT {
+                (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
             } else {
                 (status, Json(parsed_json)).into_response()
             }
@@ -341,4 +380,36 @@ fn github_error_response(upstream_failed: bool, status: StatusCode, detail: Stri
         })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CREDENTIAL_HELPER_CONFIG;
+    use std::process::Command;
+
+    #[test]
+    fn credential_helper_command_line_config_is_valid() {
+        let output = Command::new("git")
+            .args([
+                "-c",
+                "credential.helper=",
+                "-c",
+                CREDENTIAL_HELPER_CONFIG,
+                "config",
+                "--get-all",
+                "credential.helper",
+            ])
+            .output()
+            .expect("git must be available for this test");
+
+        assert!(
+            output.status.success(),
+            "git rejected the credential helper config: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            &CREDENTIAL_HELPER_CONFIG["credential.helper=".len()..]
+        );
+    }
 }

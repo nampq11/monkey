@@ -11,9 +11,15 @@ use tokio_util::codec::{FramedRead, LinesCodec};
 use super::pi_protocol::{PiEvent, PiResponse};
 use super::{EngineAdapter, EngineError, Outcome, OutcomeStatus, RunParams};
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct PiAdapter {
     pub binary: String,
+}
+
+impl Default for PiAdapter {
+    fn default() -> Self {
+        Self::new(None)
+    }
 }
 
 impl PiAdapter {

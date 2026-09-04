@@ -30,6 +30,11 @@ fn params<'a>(session_dir: &'a Path, worktree: &'a Path) -> RunParams<'a> {
     }
 }
 
+#[test]
+fn default_adapter_uses_pi_binary() {
+    assert_eq!(PiAdapter::default().binary, "pi");
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn malformed_agent_event_fails_the_run() {

@@ -373,6 +373,43 @@ impl Store {
         Ok(rows.next().transpose()?)
     }
 
+    pub async fn prior_session_dir(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i64,
+        exclude_delivery_id: &str,
+    ) -> StoreResult<Option<String>> {
+        let store = self.clone();
+        let owner = owner.to_string();
+        let repo = repo.to_string();
+        let exclude_delivery_id = exclude_delivery_id.to_string();
+        run_db_task(move || {
+            store.prior_session_dir_blocking(&owner, &repo, number, &exclude_delivery_id)
+        })
+        .await
+    }
+
+    fn prior_session_dir_blocking(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i64,
+        exclude_delivery_id: &str,
+    ) -> StoreResult<Option<String>> {
+        let conn = self.lock_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT session_dir FROM events \
+             WHERE owner=?1 AND repo=?2 AND number=?3 AND delivery_id != ?4 \
+             AND session_dir IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+        )?;
+        let mut rows = stmt
+            .query_map(params![owner, repo, number, exclude_delivery_id], |row| {
+                row.get(0)
+            })?;
+        Ok(rows.next().transpose()?)
+    }
+
     pub async fn status_counts(&self) -> StoreResult<Vec<(String, i64)>> {
         let store = self.clone();
         run_db_task(move || store.status_counts_blocking()).await

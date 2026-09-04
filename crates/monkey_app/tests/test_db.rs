@@ -57,6 +57,64 @@ async fn test_claim_and_finish_flow() {
 }
 
 #[tokio::test]
+async fn test_prior_session_dir_excludes_current_event() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let store = Store::new(&db_path).unwrap();
+
+    // A completed prior run recorded its session dir.
+    store
+        .enqueue("seed", "issues", "acme", "widget", 1, "{}")
+        .await
+        .unwrap();
+    store.claim("seed").await.unwrap();
+    store
+        .done("seed", Some("/sessions/acme__widget__1"))
+        .await
+        .unwrap();
+
+    // The current pending follow-up event.
+    store
+        .enqueue("d1", "issue_comment", "acme", "widget", 1, "{}")
+        .await
+        .unwrap();
+
+    // Looking up prior history for the current event finds the earlier run...
+    let prior = store
+        .prior_session_dir("acme", "widget", 1, "d1")
+        .await
+        .unwrap();
+    assert_eq!(prior.as_deref(), Some("/sessions/acme__widget__1"));
+
+    // ...and the current event itself never counts as prior history.
+    let none = store
+        .prior_session_dir("acme", "widget", 1, "seed")
+        .await
+        .unwrap();
+    assert_eq!(none, None);
+}
+
+#[tokio::test]
+async fn test_prior_session_dir_ignores_events_without_session() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let store = Store::new(&db_path).unwrap();
+
+    // Skipped events complete without a session dir.
+    store
+        .enqueue("skip", "issues", "acme", "widget", 1, "{}")
+        .await
+        .unwrap();
+    store.done("skip", None).await.unwrap();
+
+    let prior = store
+        .prior_session_dir("acme", "widget", 1, "other")
+        .await
+        .unwrap();
+    assert_eq!(prior, None);
+}
+
+#[tokio::test]
 async fn test_audit_tool_call_recorded() {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("test.db");

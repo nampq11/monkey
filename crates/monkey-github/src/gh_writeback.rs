@@ -1,13 +1,13 @@
 use regex::Regex;
 use serde_json::{Value, json};
 use std::path::Path;
-use std::process::Command;
 
 use crate::host_tools::GHProxy;
 use monkey_core::config::Settings;
 use monkey_core::db::Store;
 use monkey_core::dispatch::TaskKind;
 use monkey_engine::adapters::Outcome;
+use monkey_engine::adapters::pi::REPORT_SECTIONS;
 
 /// Identifies the GitHub issue a write-back targets. Grouping the three
 /// fields keeps them from drifting apart across function signatures.
@@ -102,8 +102,7 @@ pub async fn open_pr_if_gated(
 }
 
 pub fn has_required_headers(body: &str, number: i64) -> bool {
-    let sections = ["## Repro", "## Cause", "## Fix", "## Verification"];
-    if !sections.iter().all(|&s| body.contains(s)) {
+    if !REPORT_SECTIONS.iter().all(|&s| body.contains(s)) {
         return false;
     }
 
@@ -133,41 +132,4 @@ fn truncate_utf8(text: &str, max_bytes: usize) -> String {
         .take_while(|(index, character)| index + character.len_utf8() <= max_bytes)
         .map(|(_, character)| character)
         .collect()
-}
-
-pub fn gate_pre_push(worktree: &Path, _branch: &str) -> Result<(), String> {
-    let diff = Command::new("git")
-        .args(["-C", worktree.to_str().unwrap(), "diff", "--quiet"])
-        .status()
-        .map_err(|e| format!("git diff check failed: {}", e))?;
-
-    if !diff.success() {
-        return Err("working tree not clean".to_string());
-    }
-
-    let status_out = Command::new("git")
-        .args(["-C", worktree.to_str().unwrap(), "status", "--porcelain"])
-        .output()
-        .map_err(|e| format!("git status check failed: {}", e))?;
-
-    if !status_out.stdout.is_empty() {
-        return Err("working tree not clean".to_string());
-    }
-
-    let log_out = Command::new("git")
-        .args([
-            "-C",
-            worktree.to_str().unwrap(),
-            "log",
-            "-1",
-            "--format=%an <%ae>",
-        ])
-        .output()
-        .map_err(|e| format!("git log check failed: {}", e))?;
-
-    if String::from_utf8_lossy(&log_out.stdout).trim().is_empty() {
-        return Err("no author on HEAD commit".to_string());
-    }
-
-    Ok(())
 }

@@ -111,19 +111,18 @@ async fn github_webhook(
             .into_response();
     }
 
-    let sender = payload
-        .get("sender")
+    let sender = payload.get("sender");
+    let sender_login = sender
         .and_then(|sender| sender.get("login"))
         .and_then(|login| login.as_str())
         .unwrap_or("");
-    let sender_type = payload
-        .get("sender")
+    let sender_type = sender
         .and_then(|sender| sender.get("type"))
         .and_then(|sender_type| sender_type.as_str())
         .unwrap_or("");
     if (!state.settings.bot_login.is_empty()
-        && sender.eq_ignore_ascii_case(&state.settings.bot_login))
-        || sender.ends_with("[bot]")
+        && sender_login.eq_ignore_ascii_case(&state.settings.bot_login))
+        || sender_login.ends_with("[bot]")
         || sender_type.eq_ignore_ascii_case("bot")
     {
         return (

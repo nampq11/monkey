@@ -48,13 +48,11 @@ async fn run_serve() -> Result<(), Box<dyn std::error::Error>> {
 
     let adapter = Arc::new(PiAdapter::default());
 
-    let worker_store = store.clone();
-    let worker_adapter = adapter.clone();
-    let worker_settings = settings.clone();
-
-    tokio::spawn(async move {
-        worker_loop(worker_store, worker_adapter, worker_settings).await;
-    });
+    tokio::spawn(worker_loop(
+        store.clone(),
+        adapter.clone(),
+        settings.clone(),
+    ));
 
     let webhook_state = WebhookState { settings, store };
     let app = webhook_app(webhook_state);
@@ -130,17 +128,13 @@ fn run_cleanup(target: &str) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 pub fn split_target(target: &str) -> Result<(String, (String, i64)), String> {
-    let mut parts = target.split('#');
-    let repo_part = parts.next().ok_or("invalid target format")?;
-    let num_part = parts.next().ok_or("missing issue number (#)")?;
+    let (repo_part, num_part) = target.split_once('#').ok_or("missing issue number (#)")?;
 
     let number: i64 = num_part
         .parse()
         .map_err(|_| "invalid issue number".to_string())?;
 
-    let mut repo_parts = repo_part.split('/');
-    let owner = repo_parts.next().ok_or("missing owner")?;
-    let repo = repo_parts.next().ok_or("missing repo")?;
+    let (owner, repo) = repo_part.split_once('/').ok_or("missing repo")?;
 
     Ok((owner.to_string(), (repo.to_string(), number)))
 }

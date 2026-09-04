@@ -35,127 +35,89 @@ impl EngineAdapter for PiAdapter {
             .await
             .map_err(|e| format!("failed to create session dir: {}", e))?;
 
-        let mut child = spawn_pi(&self.binary, &params)?;
-
-        let mut stdin = child.stdin.take().ok_or("failed to open stdin")?;
-        let stdout = child.stdout.take().ok_or("failed to open stdout")?;
-        let mut lines = FramedRead::new(stdout, LinesCodec::new());
-
-        // 1. Send initial prompt
-        let prompt_msg = json!({
-            "type": "prompt",
-            "message": params.prompt,
-            "id": "monkey-1"
-        });
-        send_line(&mut stdin, &prompt_msg).await?;
-
-        // 2. Drain until agent_settled
-        let mut raw_events = Vec::new();
-        drain_until_settled(&mut lines, &mut raw_events, params.timeout).await?;
-
-        // 3. Get session stats
-        let stats_req = json!({
-            "type": "get_session_stats",
-            "id": "stats-1"
-        });
-        send_line(&mut stdin, &stats_req).await?;
-        let stats_resp = wait_for_response(&mut lines, "stats-1", Duration::from_secs(10)).await?;
-
-        // 4. Get last assistant text
-        let text_req = json!({
-            "type": "get_last_assistant_text",
-            "id": "text-1"
-        });
-        send_line(&mut stdin, &text_req).await?;
-        let text_resp = wait_for_response(&mut lines, "text-1", Duration::from_secs(10)).await?;
-
-        // Clean up process
-        let _ = child.kill().await;
-
-        build_outcome(
-            params.worktree,
-            params.session_dir,
-            raw_events,
-            &stats_resp,
-            &text_resp,
-        )
-        .await
+        drive_rpc_session(&self.binary, &params, None).await
     }
 
     async fn resume(&self, params: RunParams<'_>) -> Result<Outcome, String> {
-        let session_path = find_session_file(params.session_dir);
-
-        let mut child = spawn_pi(&self.binary, &params)?;
-
-        let mut stdin = child.stdin.take().ok_or("failed to open stdin")?;
-        let stdout = child.stdout.take().ok_or("failed to open stdout")?;
-        let mut lines = FramedRead::new(stdout, LinesCodec::new());
-
-        // 1. Switch session if existing transcript exists
-        if let Some(ref path) = session_path {
-            let switch_msg = json!({
-                "type": "switch_session",
-                "sessionPath": path.to_string_lossy()
-            });
-            send_line(&mut stdin, &switch_msg).await?;
-        }
-
-        // 2. Send follow-up prompt
-        let prompt_msg = json!({
-            "type": "prompt",
-            "message": params.prompt,
-            "id": "monkey-1"
-        });
-        send_line(&mut stdin, &prompt_msg).await?;
-
-        // 3. Drain until settled
-        let mut raw_events = Vec::new();
-        drain_until_settled(&mut lines, &mut raw_events, params.timeout).await?;
-
-        // 4. Get stats and last text
-        let stats_req = json!({
-            "type": "get_session_stats",
-            "id": "stats-1"
-        });
-        send_line(&mut stdin, &stats_req).await?;
-        let stats_resp = wait_for_response(&mut lines, "stats-1", Duration::from_secs(10)).await?;
-
-        let text_req = json!({
-            "type": "get_last_assistant_text",
-            "id": "text-1"
-        });
-        send_line(&mut stdin, &text_req).await?;
-        let text_resp = wait_for_response(&mut lines, "text-1", Duration::from_secs(10)).await?;
-
-        let _ = child.kill().await;
-
-        build_outcome(
-            params.worktree,
-            params.session_dir,
-            raw_events,
-            &stats_resp,
-            &text_resp,
-        )
-        .await
+        drive_rpc_session(&self.binary, &params, find_session_file(params.session_dir)).await
     }
 
     fn session_artifacts(&self, session_dir: &Path) -> Value {
-        let session_path = find_session_file(session_dir);
-        match session_path {
-            Some(path) => {
-                let msgs = parse_transcript(&path);
-                json!({
-                    "session_file": path.to_string_lossy(),
-                    "messages": msgs
-                })
-            }
+        match find_session_file(session_dir) {
+            Some(path) => json!({
+                "session_file": path.to_string_lossy(),
+                "messages": parse_transcript(&path)
+            }),
             None => json!({}),
         }
     }
 }
 
-// run() and resume() shared the entire "collect stats, read branch, classify
-// output" tail - extracted so the two paths cannot drift apart.
+// run() and resume() share the whole session drive: prompt, drain to
+// agent_settled, then collect stats and last text. The only difference is
+// resume() switching into an existing transcript first.
+async fn drive_rpc_session(
+    binary: &str,
+    params: &RunParams<'_>,
+    switch_to: Option<PathBuf>,
+) -> Result<Outcome, String> {
+    let mut child = spawn_pi(binary, params)?;
+
+    let mut stdin = child.stdin.take().ok_or("failed to open stdin")?;
+    let stdout = child.stdout.take().ok_or("failed to open stdout")?;
+    let mut lines = FramedRead::new(stdout, LinesCodec::new());
+
+    if let Some(path) = switch_to {
+        send_line(
+            &mut stdin,
+            &json!({
+                "type": "switch_session",
+                "sessionPath": path.to_string_lossy()
+            }),
+        )
+        .await?;
+    }
+
+    send_line(
+        &mut stdin,
+        &json!({
+            "type": "prompt",
+            "message": params.prompt,
+            "id": "monkey-1"
+        }),
+    )
+    .await?;
+
+    let mut raw_events = Vec::new();
+    drain_until_settled(&mut lines, &mut raw_events, params.timeout).await?;
+    let stats_resp = rpc_request(&mut stdin, &mut lines, "get_session_stats", "stats-1").await?;
+    let text_resp =
+        rpc_request(&mut stdin, &mut lines, "get_last_assistant_text", "text-1").await?;
+
+    let _ = child.kill().await;
+
+    build_outcome(
+        params.worktree,
+        params.session_dir,
+        raw_events,
+        &stats_resp,
+        &text_resp,
+    )
+    .await
+}
+
+async fn rpc_request(
+    stdin: &mut tokio::process::ChildStdin,
+    lines: &mut FramedRead<tokio::process::ChildStdout, LinesCodec>,
+    request_type: &str,
+    req_id: &str,
+) -> Result<Value, String> {
+    send_line(stdin, &json!({ "type": request_type, "id": req_id })).await?;
+    wait_for_response(lines, req_id, Duration::from_secs(10)).await
+}
+
+// build_outcome is the "collect stats, read branch, classify output" tail
+// shared by run() and resume() so the two paths cannot drift apart.
 async fn build_outcome(
     worktree: &Path,
     session_dir: &Path,
@@ -226,7 +188,6 @@ fn spawn_pi(binary: &str, params: &RunParams<'_>) -> Result<tokio::process::Chil
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::null());
-    cmd.stderr(Stdio::null());
     cmd.kill_on_drop(true);
 
     // Keep internal configuration and GitHub credentials out of prompt-injected code.
@@ -260,23 +221,7 @@ async fn drain_until_settled(
 ) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return Err("pi timed out waiting for agent_settled".to_string());
-        }
-
-        let line = match tokio::time::timeout(remaining, lines.next()).await {
-            Ok(Some(Ok(line))) => line,
-            Ok(Some(Err(error))) => return Err(format!("failed reading pi output: {}", error)),
-            Ok(None) => return Err("pi exited before agent_settled".to_string()),
-            Err(_) => return Err("pi timed out waiting for agent_settled".to_string()),
-        };
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let val = serde_json::from_str::<Value>(trimmed)
-            .map_err(|error| format!("malformed pi event: {}", error))?;
+        let val = next_json_event(lines, deadline, "agent_settled", "event").await?;
         let is_settled = val.get("type").and_then(|value| value.as_str()) == Some("agent_settled");
         raw_events.push(val);
         if is_settled {
@@ -302,6 +247,36 @@ async fn drain_until_settled(
     }
 }
 
+// Reads the next non-empty JSON line, enforcing `deadline`. The two name
+// parameters only shape error messages ("pi exited before {waiting_for}",
+// "malformed pi {parsing}").
+async fn next_json_event(
+    lines: &mut FramedRead<tokio::process::ChildStdout, LinesCodec>,
+    deadline: tokio::time::Instant,
+    waiting_for: &str,
+    parsing: &str,
+) -> Result<Value, String> {
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(format!("pi timed out waiting for {waiting_for}"));
+        }
+
+        let line = match tokio::time::timeout(remaining, lines.next()).await {
+            Ok(Some(Ok(line))) => line,
+            Ok(Some(Err(error))) => return Err(format!("failed reading pi output: {}", error)),
+            Ok(None) => return Err(format!("pi exited before {waiting_for}")),
+            Err(_) => return Err(format!("pi timed out waiting for {waiting_for}")),
+        };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        return serde_json::from_str(trimmed)
+            .map_err(|error| format!("malformed pi {parsing}: {}", error));
+    }
+}
+
 async fn wait_for_response(
     lines: &mut FramedRead<tokio::process::ChildStdout, LinesCodec>,
     req_id: &str,
@@ -309,23 +284,8 @@ async fn wait_for_response(
 ) -> Result<Value, String> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return Err(format!("timed out waiting for pi response {}", req_id));
-        }
-
-        let line = match tokio::time::timeout(remaining, lines.next()).await {
-            Ok(Some(Ok(line))) => line,
-            Ok(Some(Err(error))) => return Err(format!("failed reading pi output: {}", error)),
-            Ok(None) => return Err(format!("pi exited before response {}", req_id)),
-            Err(_) => return Err(format!("timed out waiting for pi response {}", req_id)),
-        };
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let val = serde_json::from_str::<Value>(trimmed)
-            .map_err(|error| format!("malformed pi response: {}", error))?;
+        let val =
+            next_json_event(lines, deadline, &format!("response {req_id}"), "response").await?;
         if val.get("type").and_then(|value| value.as_str()) == Some("response")
             && val.get("id").and_then(|value| value.as_str()) == Some(req_id)
         {
@@ -334,12 +294,19 @@ async fn wait_for_response(
     }
 }
 
+/// The structured report sections the fix prompt requires the engine to
+/// emit. Single source for both the lenient check here and the strict
+/// write-back gate in monkey-github.
+pub const REPORT_SECTIONS: [&str; 4] = ["## Repro", "## Cause", "## Fix", "## Verification"];
+
 pub fn looks_like_pr_body(text: &str) -> bool {
     if text.is_empty() {
         return false;
     }
-    let sections = ["## Repro", "## Cause", "## Fix", "## Verification"];
-    let count = sections.iter().filter(|&&s| text.contains(s)).count();
+    let count = REPORT_SECTIONS
+        .iter()
+        .filter(|&&s| text.contains(s))
+        .count();
     count >= 2
 }
 

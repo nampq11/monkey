@@ -53,10 +53,7 @@ pub fn verify_github_signature(
         return Err(HmacError::UnsupportedScheme);
     }
     let provided = &sig["sha256=".len()..];
-    let expected = hmac_sign(secret, body);
-    let expected_hex = &expected["sha256=".len()..];
-
-    if provided.as_bytes().ct_eq(expected_hex.as_bytes()).into() {
+    if signatures_match(provided, hmac_sign(secret, body)) {
         Ok(())
     } else {
         Err(HmacError::SignatureMismatch)
@@ -87,12 +84,14 @@ pub fn verify_internal_signature(
         return Err(HmacError::UnsupportedScheme);
     }
     let provided = &sig["sha256=".len()..];
-    let expected = hmac_sign_with_timestamp(key, body, ts);
-    let expected_hex = &expected["sha256=".len()..];
-
-    if provided.as_bytes().ct_eq(expected_hex.as_bytes()).into() {
+    if signatures_match(provided, hmac_sign_with_timestamp(key, body, ts)) {
         Ok(())
     } else {
         Err(HmacError::SignatureMismatch)
     }
+}
+
+fn signatures_match(provided: &str, expected: String) -> bool {
+    let expected_hex = &expected["sha256=".len()..];
+    provided.as_bytes().ct_eq(expected_hex.as_bytes()).into()
 }

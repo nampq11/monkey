@@ -58,45 +58,27 @@ impl Settings {
             String::new()
         };
 
+        let get_env_or = |keys: &[&str], default: &str| -> String {
+            match get_env(keys) {
+                value if value.is_empty() => default.to_string(),
+                value => value,
+            }
+        };
+
         let github_webhook_secret =
             get_env(&["GITHUB_WEBHOOK_SECRET", "MONKEY_GITHUB_WEBHOOK_SECRET"]);
         let bot_login = get_env(&["MONKEY_BOT_LOGIN", "ROBOMP_BOT_LOGIN"]);
-        let git_author_name = {
-            let val = get_env(&["MONKEY_GIT_AUTHOR_NAME"]);
-            if val.is_empty() {
-                "monkey".to_string()
-            } else {
-                val
-            }
-        };
-        let git_author_email = {
-            let val = get_env(&["MONKEY_GIT_AUTHOR_EMAIL"]);
-            if val.is_empty() {
-                "monkey@users.noreply.github.com".to_string()
-            } else {
-                val
-            }
-        };
+        let git_author_name = get_env_or(&["MONKEY_GIT_AUTHOR_NAME"], "monkey");
+        let git_author_email = get_env_or(
+            &["MONKEY_GIT_AUTHOR_EMAIL"],
+            "monkey@users.noreply.github.com",
+        );
         let repo_allowlist = get_env(&["MONKEY_REPO_ALLOWLIST", "REPO_ALLOWLIST"]);
 
         let model = get_env(&["MONKEY_MODEL"]);
-        let thinking = {
-            let val = get_env(&["MONKEY_THINKING"]);
-            if val.is_empty() {
-                "medium".to_string()
-            } else {
-                val
-            }
-        };
+        let thinking = get_env_or(&["MONKEY_THINKING"], "medium");
         let provider = get_env(&["MONKEY_PROVIDER"]);
-        let session_dir = {
-            let val = get_env(&["MONKEY_SESSION_DIR"]);
-            if val.is_empty() {
-                "/data/sessions".to_string()
-            } else {
-                val
-            }
-        };
+        let session_dir = get_env_or(&["MONKEY_SESSION_DIR"], "/data/sessions");
 
         let max_concurrency = get_env(&["MONKEY_MAX_CONCURRENCY"])
             .parse::<usize>()
@@ -119,14 +101,7 @@ impl Settings {
         let gh_proxy_hmac_key = get_env(&["MONKEY_GH_PROXY_HMAC_KEY"]);
         let github_token = get_env(&["GITHUB_TOKEN", "MONKEY_GITHUB_TOKEN"]);
 
-        let workspaces_root = {
-            let val = get_env(&["MONKEY_WORKSPACES_ROOT"]);
-            if val.is_empty() {
-                "/data/workspaces".to_string()
-            } else {
-                val
-            }
-        };
+        let workspaces_root = get_env_or(&["MONKEY_WORKSPACES_ROOT"], "/data/workspaces");
 
         let settings = Self {
             github_webhook_secret,
@@ -183,16 +158,15 @@ impl Settings {
     }
 
     pub fn allowlist(&self) -> Vec<String> {
-        self.repo_allowlist
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect()
+        self.split_csv(&self.repo_allowlist)
     }
 
     pub fn models(&self) -> Vec<String> {
-        self.model
-            .split(',')
+        self.split_csv(&self.model)
+    }
+
+    fn split_csv(&self, raw: &str) -> Vec<String> {
+        raw.split(',')
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect()

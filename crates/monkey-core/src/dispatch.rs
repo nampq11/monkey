@@ -63,36 +63,27 @@ pub fn classify_and_build_task(event_type: &str, payload: &Value) -> Option<Task
     let combined = format!("{}\n{}", title, body).to_lowercase();
 
     if labels.iter().any(|l| l == "question") || title.contains('?') {
-        return Some(Task {
-            kind: TaskKind::Answer,
-            prompt: question_prompt(title, body),
-            pr_body: String::new(),
-            comment: String::new(),
-            labels: vec!["question".to_string()],
-            autoclose: false,
-        });
+        return Some(task(
+            TaskKind::Answer,
+            question_prompt(title, body),
+            &["question"],
+        ));
     }
 
     if labels.iter().any(|l| l == "invalid") {
-        return Some(Task {
-            kind: TaskKind::Invalid,
-            prompt: invalid_prompt(title, body),
-            pr_body: String::new(),
-            comment: String::new(),
-            labels: vec!["invalid".to_string()],
-            autoclose: false,
-        });
+        return Some(task(
+            TaskKind::Invalid,
+            invalid_prompt(title, body),
+            &["invalid"],
+        ));
     }
 
     if labels.iter().any(|l| l == "duplicate") {
-        return Some(Task {
-            kind: TaskKind::Invalid,
-            prompt: duplicate_prompt(title, body),
-            pr_body: String::new(),
-            comment: String::new(),
-            labels: vec!["duplicate".to_string()],
-            autoclose: false,
-        });
+        return Some(task(
+            TaskKind::Invalid,
+            duplicate_prompt(title, body),
+            &["duplicate"],
+        ));
     }
 
     let is_bug = has_any(
@@ -115,14 +106,11 @@ pub fn classify_and_build_task(event_type: &str, payload: &Value) -> Option<Task
     let number = issue.get("number").and_then(|n| n.as_i64());
     if is_bug || is_doc {
         let label = if is_bug { "bug" } else { "documentation" };
-        return Some(Task {
-            kind: TaskKind::Fix,
-            prompt: fix_prompt(title, body, number),
-            pr_body: String::new(),
-            comment: String::new(),
-            labels: vec![label.to_string()],
-            autoclose: false,
-        });
+        return Some(task(
+            TaskKind::Fix,
+            fix_prompt(title, body, number),
+            &[label],
+        ));
     }
 
     let is_enh = has_any(
@@ -136,25 +124,30 @@ pub fn classify_and_build_task(event_type: &str, payload: &Value) -> Option<Task
         ],
     );
     if is_enh {
-        return Some(Task {
-            kind: TaskKind::Comment,
-            prompt: enhancement_prompt(title, body),
-            pr_body: String::new(),
-            comment: String::new(),
-            labels: vec!["enhancement".to_string()],
-            autoclose: false,
-        });
+        return Some(task(
+            TaskKind::Comment,
+            enhancement_prompt(title, body),
+            &["enhancement"],
+        ));
     }
 
     // Fallback: enhancement-ish default (comment only).
-    Some(Task {
-        kind: TaskKind::Comment,
-        prompt: enhancement_prompt(title, body),
+    Some(task(
+        TaskKind::Comment,
+        enhancement_prompt(title, body),
+        &[],
+    ))
+}
+
+fn task(kind: TaskKind, prompt: String, labels: &[&str]) -> Task {
+    Task {
+        kind,
+        prompt,
         pr_body: String::new(),
         comment: String::new(),
-        labels: Vec::new(),
+        labels: labels.iter().map(|l| l.to_string()).collect(),
         autoclose: false,
-    })
+    }
 }
 
 pub fn fix_prompt(title: &str, body: &str, number: Option<i64>) -> String {

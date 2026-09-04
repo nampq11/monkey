@@ -185,11 +185,7 @@ impl Store {
             row_to_event,
         )?;
 
-        let mut events = Vec::new();
-        for r in rows {
-            events.push(r?);
-        }
-        Ok(events)
+        rows.collect()
     }
 
     pub fn claim(&self, delivery_id: &str) -> SqlResult<bool> {
@@ -258,12 +254,7 @@ impl Store {
              FROM events WHERE owner=?1 AND repo=?2 AND number=?3 ORDER BY created_at DESC LIMIT 1",
         )?;
         let mut rows = stmt.query_map(params![owner, repo, number], row_to_event)?;
-
-        if let Some(res) = rows.next() {
-            Ok(Some(res?))
-        } else {
-            Ok(None)
-        }
+        rows.next().transpose()
     }
 
     pub fn status_counts(&self) -> SqlResult<Vec<(String, i64)>> {
@@ -273,11 +264,7 @@ impl Store {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })?;
 
-        let mut counts = Vec::new();
-        for r in rows {
-            counts.push(r?);
-        }
-        Ok(counts)
+        rows.collect()
     }
 
     pub fn with_conn<F, R>(&self, f: F) -> R

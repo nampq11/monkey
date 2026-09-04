@@ -2,6 +2,7 @@ use regex::Regex;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde_json::{Value, json};
 use std::path::Path;
+use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::gh_writeback::RepoRef;
@@ -52,10 +53,15 @@ impl GHProxy {
         let sig = hmac_sign_with_timestamp(&self.key, &serialized, ts as i64);
 
         let mut headers = HeaderMap::new();
-        headers.insert("x-monkey-sig", HeaderValue::from_str(&sig).unwrap());
+        headers.insert(
+            "x-monkey-sig",
+            HeaderValue::from_str(&sig)
+                .map_err(|e| format!("invalid x-monkey-sig header: {}", e))?,
+        );
         headers.insert(
             "x-monkey-ts",
-            HeaderValue::from_str(&ts.to_string()).unwrap(),
+            HeaderValue::from_str(&ts.to_string())
+                .map_err(|e| format!("invalid x-monkey-ts header: {}", e))?,
         );
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
@@ -145,6 +151,9 @@ impl GHProxy {
 }
 
 pub fn redact(text: &str) -> String {
-    let re = Regex::new(r"gh[pousr]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+").unwrap();
-    re.replace_all(text, "[redacted]").to_string()
+    static TOKEN_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"gh[pousr]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+")
+            .expect("token redaction regex must compile")
+    });
+    TOKEN_PATTERN.replace_all(text, "[redacted]").to_string()
 }

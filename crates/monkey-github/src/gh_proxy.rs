@@ -272,39 +272,21 @@ async fn call_gh(
             let response_text = match resp.text().await {
                 Ok(text) => text,
                 Err(error) => {
-                    let response_status = if upstream_failed {
-                        status
-                    } else {
-                        StatusCode::BAD_GATEWAY
-                    };
-                    return (
-                        response_status,
-                        Json(json!({
-                            "error": true,
-                            "status": status.as_u16(),
-                            "detail": format!("failed to read GitHub response: {}", error)
-                        })),
-                    )
-                        .into_response();
+                    return github_error_response(
+                        upstream_failed,
+                        status,
+                        format!("failed to read GitHub response: {}", error),
+                    );
                 }
             };
             let parsed_json = match serde_json::from_str::<Value>(&response_text) {
                 Ok(value) => value,
                 Err(error) => {
-                    let response_status = if upstream_failed {
-                        status
-                    } else {
-                        StatusCode::BAD_GATEWAY
-                    };
-                    return (
-                        response_status,
-                        Json(json!({
-                            "error": true,
-                            "status": status.as_u16(),
-                            "detail": format!("malformed GitHub JSON response: {}", error)
-                        })),
-                    )
-                        .into_response();
+                    return github_error_response(
+                        upstream_failed,
+                        status,
+                        format!("malformed GitHub JSON response: {}", error),
+                    );
                 }
             };
 
@@ -338,4 +320,23 @@ fn redact_token(text: &str, token: &str) -> String {
     } else {
         text.to_string()
     }
+}
+
+// Errors reading/decoding the upstream response are passed through as-is for
+// upstream failures; anything else is our fault (bad gateway).
+fn github_error_response(upstream_failed: bool, status: StatusCode, detail: String) -> Response {
+    let response_status = if upstream_failed {
+        status
+    } else {
+        StatusCode::BAD_GATEWAY
+    };
+    (
+        response_status,
+        Json(json!({
+            "error": true,
+            "status": status.as_u16(),
+            "detail": detail
+        })),
+    )
+        .into_response()
 }

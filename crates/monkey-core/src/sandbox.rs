@@ -2,6 +2,7 @@ use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::LazyLock;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -13,9 +14,11 @@ pub enum SandboxError {
 }
 
 pub fn slug(text: &str) -> String {
-    let re = Regex::new(r"[^a-z0-9]+").unwrap();
+    static SEPARATOR: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"[^a-z0-9]+").expect("slug regex must compile"));
+
     let lower = text.to_lowercase();
-    let replaced = re.replace_all(&lower, "-");
+    let replaced = SEPARATOR.replace_all(&lower, "-");
     let trimmed = replaced.trim_matches('-');
     if trimmed.is_empty() {
         "issue".to_string()
@@ -51,18 +54,20 @@ pub fn ensure_workspace(
     std::fs::create_dir_all(workspaces_root).map_err(|e| SandboxError::Io(e.to_string()))?;
 
     let mirror = workspaces_root.join(format!("{}__{}.git", owner, repo));
+    let (Some(mirror_str), Some(worktree_str)) = (mirror.to_str(), worktree.to_str()) else {
+        return Err(SandboxError::Io(
+            "workspace path is not valid UTF-8".to_string(),
+        ));
+    };
     if !mirror.exists() {
-        run_git_cmd(&["clone", "--mirror", repo_url, mirror.to_str().unwrap()])?;
+        run_git_cmd(&["clone", "--mirror", repo_url, mirror_str])?;
     }
 
     // Base branch off refs/heads/<default_branch>
-    let mirror_str = mirror.to_str().unwrap();
     let default_ref = format!("refs/heads/{}", default_branch);
     run_git_cmd(&["-C", mirror_str, "branch", "-f", &branch, &default_ref])?;
 
     std::fs::create_dir_all(&base).map_err(|e| SandboxError::Io(e.to_string()))?;
-
-    let worktree_str = worktree.to_str().unwrap();
     run_git_cmd(&[
         "-C",
         mirror_str,

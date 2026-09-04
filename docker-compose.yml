@@ -1,5 +1,6 @@
 services:
   monkey:
+    container_name: monkey-orchestrator
     build:
       context: .
       dockerfile: Dockerfile
@@ -30,6 +31,7 @@ services:
       - "8000:8000"
 
   gh-proxy:
+    container_name: monkey-gh-proxy
     build:
       context: .
       dockerfile: Dockerfile.gh-proxy

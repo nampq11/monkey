@@ -314,36 +314,7 @@ async fn call_gh(
                     );
                 }
             };
-            let parsed_json = if response_text.trim().is_empty() {
-                json!({ "ok": true })
-            } else {
-                match serde_json::from_str::<Value>(&response_text) {
-                    Ok(value) => value,
-                    Err(decode_error) => {
-                        return github_error_response(
-                            upstream_failed,
-                            status,
-                            format!("malformed GitHub JSON response: {}", decode_error),
-                        );
-                    }
-                }
-            };
-
-            if upstream_failed {
-                (
-                    status,
-                    Json(json!({
-                        "error": true,
-                        "status": status.as_u16(),
-                        "body": parsed_json
-                    })),
-                )
-                    .into_response()
-            } else if status == StatusCode::NO_CONTENT {
-                (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
-            } else {
-                (status, Json(parsed_json)).into_response()
-            }
+            proxy_response(status, response_text)
         }
         Err(error) => (
             StatusCode::BAD_GATEWAY,
@@ -352,6 +323,47 @@ async fn call_gh(
             })),
         )
             .into_response(),
+    }
+}
+
+pub(crate) fn empty_success_value() -> Value {
+    json!({ "ok": true })
+}
+
+// Maps an upstream GitHub response onto the internal proxy protocol: empty 2xx
+// bodies become the shared success value, other 2xx bodies are forwarded as-is,
+// and upstream failures keep their status and details.
+fn proxy_response(status: StatusCode, response_text: String) -> Response {
+    let upstream_failed = status.is_client_error() || status.is_server_error();
+    let parsed_json = if response_text.trim().is_empty() {
+        empty_success_value()
+    } else {
+        match serde_json::from_str::<Value>(&response_text) {
+            Ok(value) => value,
+            Err(decode_error) => {
+                return github_error_response(
+                    upstream_failed,
+                    status,
+                    format!("malformed GitHub JSON response: {}", decode_error),
+                );
+            }
+        }
+    };
+
+    if upstream_failed {
+        (
+            status,
+            Json(json!({
+                "error": true,
+                "status": status.as_u16(),
+                "body": parsed_json
+            })),
+        )
+            .into_response()
+    } else if status == StatusCode::NO_CONTENT {
+        (StatusCode::OK, Json(parsed_json)).into_response()
+    } else {
+        (status, Json(parsed_json)).into_response()
     }
 }
 
@@ -384,8 +396,77 @@ fn github_error_response(upstream_failed: bool, status: StatusCode, detail: Stri
 
 #[cfg(test)]
 mod tests {
-    use super::CREDENTIAL_HELPER_CONFIG;
+    use super::{CREDENTIAL_HELPER_CONFIG, proxy_response};
+    use axum::body::to_bytes;
+    use axum::http::StatusCode;
+    use axum::response::Response;
+    use serde_json::{Value, json};
     use std::process::Command;
+
+    async fn status_and_body(response: Response) -> (StatusCode, Value) {
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body should be readable");
+        let value =
+            serde_json::from_slice(&body).expect("response body should be valid JSON");
+        (status, value)
+    }
+
+    #[tokio::test]
+    async fn empty_no_content_response_is_reported_as_success() {
+        let response = proxy_response(StatusCode::NO_CONTENT, String::new());
+        let (status, body) = status_and_body(response).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, json!({ "ok": true }));
+    }
+
+    #[tokio::test]
+    async fn empty_ok_response_is_reported_as_success() {
+        let response = proxy_response(StatusCode::OK, "  \n".to_string());
+        let (status, body) = status_and_body(response).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, json!({ "ok": true }));
+    }
+
+    #[tokio::test]
+    async fn non_empty_success_response_is_forwarded_with_its_status() {
+        let payload = json!({ "id": 1, "number": 7 });
+        let response = proxy_response(StatusCode::CREATED, payload.to_string());
+        let (status, body) = status_and_body(response).await;
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(body, payload);
+    }
+
+    #[tokio::test]
+    async fn upstream_error_keeps_status_and_details() {
+        let payload = json!({ "message": "Not Found" });
+        let response = proxy_response(StatusCode::NOT_FOUND, payload.to_string());
+        let (status, body) = status_and_body(response).await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            body,
+            json!({
+                "error": true,
+                "status": 404,
+                "body": payload
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_success_response_is_a_bad_gateway() {
+        let response = proxy_response(StatusCode::OK, "not json".to_string());
+        let (status, body) = status_and_body(response).await;
+
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(body["error"], json!(true));
+        assert_eq!(body["status"], json!(200));
+    }
 
     #[test]
     fn credential_helper_command_line_config_is_valid() {

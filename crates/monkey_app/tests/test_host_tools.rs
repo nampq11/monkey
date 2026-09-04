@@ -1,9 +1,9 @@
 use axum::Router;
 use axum::extract::Json;
 use axum::routing::post;
-use monkey::db::Store;
-use monkey::gh_writeback::RepoRef;
-use monkey::host_tools::GHProxy;
+use monkey_app::db::Store;
+use monkey_app::gh_writeback::RepoRef;
+use monkey_app::host_tools::GHProxy;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use tempfile::tempdir;

@@ -1,7 +1,7 @@
-use monkey::adapters::Outcome;
-use monkey::db::Store;
-use monkey::gh_writeback::{RepoRef, has_required_headers, open_pr_if_gated};
-use monkey::host_tools::GHProxy;
+use monkey_app::adapters::Outcome;
+use monkey_app::db::Store;
+use monkey_app::gh_writeback::{RepoRef, has_required_headers, open_pr_if_gated};
+use monkey_app::host_tools::GHProxy;
 use tempfile::tempdir;
 
 const GOOD_BODY: &str = r#"## Repro

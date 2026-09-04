@@ -1,5 +1,5 @@
 [package]
-name = "monkey-github"
+name = "monkey_github"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -9,8 +9,8 @@ description = "GitHub interaction layer: API client, write-back, and token-holdi
 path = "src/monkey_github.rs"
 
 [dependencies]
-monkey-core = { workspace = true }
-monkey-engine = { workspace = true }
+monkey_core = { workspace = true }
+monkey_engine = { workspace = true }
 axum = { workspace = true }
 reqwest = { workspace = true }
 serde_json = { workspace = true }

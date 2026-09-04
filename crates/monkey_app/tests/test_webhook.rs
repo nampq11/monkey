@@ -1,10 +1,10 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
-use monkey::config::Settings;
-use monkey::db::Store;
-use monkey::hmac_auth::hmac_sign;
-use monkey::webhook::{WebhookState, app};
+use monkey_app::config::Settings;
+use monkey_app::db::Store;
+use monkey_app::hmac_auth::hmac_sign;
+use monkey_app::webhook::{WebhookState, app};
 use serde_json::json;
 use std::sync::OnceLock;
 use tempfile::tempdir;

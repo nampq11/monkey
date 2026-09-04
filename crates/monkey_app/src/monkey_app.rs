@@ -1,6 +1,6 @@
 //! Facade crate: the app modules live here; domain and integration layers
 //! are re-exported from the workspace crates so the public
-//! `monkey::<module>` paths used by the integration tests stay stable.
+//! `monkey_app::<module>` paths used by the integration tests stay stable.
 
 pub mod cli;
 pub mod webhook;

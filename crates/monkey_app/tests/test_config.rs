@@ -1,4 +1,4 @@
-use monkey::config::{AuthMode, Settings};
+use monkey_app::config::{AuthMode, Settings};
 use std::sync::OnceLock;
 
 fn base_settings() -> Settings {

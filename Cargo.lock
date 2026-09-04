@@ -796,15 +796,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "monkey"
+name = "monkey_app"
 version = "0.1.0"
 dependencies = [
  "axum",
  "clap",
  "http-body-util",
- "monkey-core",
- "monkey-engine",
- "monkey-github",
+ "monkey_core",
+ "monkey_engine",
+ "monkey_github",
  "serde_json",
  "tempfile",
  "thiserror",
@@ -815,7 +815,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "monkey-core"
+name = "monkey_core"
 version = "0.1.0"
 dependencies = [
  "hex",
@@ -831,7 +831,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "monkey-engine"
+name = "monkey_engine"
 version = "0.1.0"
 dependencies = [
  "futures-util",
@@ -844,12 +844,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "monkey-github"
+name = "monkey_github"
 version = "0.1.0"
 dependencies = [
  "axum",
- "monkey-core",
- "monkey-engine",
+ "monkey_core",
+ "monkey_engine",
  "regex",
  "reqwest",
  "serde_json",

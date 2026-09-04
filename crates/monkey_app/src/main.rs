@@ -1,5 +1,5 @@
 use clap::Parser;
-use monkey::cli::{Cli, run};
+use monkey_app::cli::{Cli, run};
 
 #[tokio::main]
 async fn main() {

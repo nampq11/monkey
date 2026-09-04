@@ -1,4 +1,4 @@
-use monkey::hmac_auth::{
+use monkey_app::hmac_auth::{
     HmacError, hmac_sign, hmac_sign_with_timestamp, verify_github_signature,
     verify_internal_signature,
 };

@@ -1,4 +1,4 @@
-use monkey::dispatch::{TaskKind, classify_and_build_task};
+use monkey_app::dispatch::{TaskKind, classify_and_build_task};
 use serde_json::json;
 
 fn make_payload(title: &str, body: &str, labels: Option<Vec<&str>>) -> serde_json::Value {

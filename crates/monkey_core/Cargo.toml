@@ -1,5 +1,5 @@
 [package]
-name = "monkey-core"
+name = "monkey_core"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

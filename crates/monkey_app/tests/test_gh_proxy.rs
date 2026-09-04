@@ -1,8 +1,8 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
-use monkey::gh_proxy::{GhProxyState, app};
-use monkey::hmac_auth::hmac_sign_with_timestamp;
+use monkey_app::gh_proxy::{GhProxyState, app};
+use monkey_app::hmac_auth::hmac_sign_with_timestamp;
 use serde_json::json;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tower::ServiceExt;

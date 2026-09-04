@@ -1,4 +1,4 @@
-use monkey::db::Store;
+use monkey_app::db::Store;
 use tempfile::tempdir;
 
 #[tokio::test]

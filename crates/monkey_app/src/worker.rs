@@ -1,10 +1,10 @@
 use serde_json::json;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use thiserror::Error;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Semaphore;
 
 use monkey_core::config::Settings;
 use monkey_core::db::{Event, Store, StoreError};
@@ -40,6 +40,27 @@ pub enum ArtifactError {
     Write(#[source] std::io::Error),
 }
 
+// Release must happen on every termination path of the spawned task,
+// including panics and cancellation, so the key is removed by a Drop guard
+// rather than an end-of-task statement. The set is a std Mutex because a
+// guard cannot await; its critical sections are synchronous and never hold
+// the lock across an await point.
+struct InflightGuard {
+    inflight: Arc<Mutex<HashSet<(String, String, i64)>>>,
+    key: (String, String, i64),
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        // A poisoned lock only means a panic occurred elsewhere in the
+        // process; the set contents are still valid to remove from.
+        self.inflight
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&self.key);
+    }
+}
+
 pub async fn worker_loop<A: EngineAdapter + 'static>(
     store: Store,
     adapter: Arc<A>,
@@ -69,15 +90,22 @@ pub async fn worker_loop<A: EngineAdapter + 'static>(
                 Err(_) => break,
             };
             let key = (row.owner.clone(), row.repo.clone(), row.number);
-            {
-                let mut lock = inflight.lock().await;
-                if lock.contains(&key) {
+            // HashSet::insert returns false when the key is already present,
+            // making the guard the single owner of the reservation.
+            let inflight_guard = {
+                let mut lock = inflight.lock().unwrap_or_else(|error| error.into_inner());
+                if !lock.insert(key.clone()) {
                     continue;
                 }
-                lock.insert(key.clone());
-            }
+                InflightGuard {
+                    inflight: inflight.clone(),
+                    key,
+                }
+            };
 
-            // Claim the event in the DB
+            // Claim the event in the DB; a failed or already-claimed event
+            // falls through to `continue`, which drops the guard and releases
+            // the key.
             match store.claim(&row.delivery_id).await {
                 Ok(claimed) if claimed => {}
                 Err(error) => {
@@ -86,27 +114,25 @@ pub async fn worker_loop<A: EngineAdapter + 'static>(
                         row.delivery_id,
                         error
                     );
-                    let mut lock = inflight.lock().await;
-                    lock.remove(&key);
                     continue;
                 }
-                Ok(_) => {
-                    let mut lock = inflight.lock().await;
-                    lock.remove(&key);
-                    continue;
-                }
+                Ok(_) => continue,
             }
 
             tokio::spawn({
                 // Shadow clones for state shared across loop iterations;
-                // `row` and `key` are per-event values and move directly.
+                // `row` and `inflight_guard` are per-event values and move
+                // directly. The guard carries the inflight Arc into the task.
                 let store = store.clone();
                 let adapter = adapter.clone();
                 let settings = settings.clone();
-                let inflight = inflight.clone();
 
                 async move {
                     let _permit = permit;
+                    // Held to the end of the task so the inflight key is
+                    // released on success, error, panic unwind, and
+                    // cancellation of this future at an await point.
+                    let _inflight_guard = inflight_guard;
                     let delivery_id = row.delivery_id.clone();
                     if let Err(error) = handle_event(&store, &*adapter, &row, &settings).await {
                         tracing::error!("failed handling event {}: {}", delivery_id, error);
@@ -118,7 +144,6 @@ pub async fn worker_loop<A: EngineAdapter + 'static>(
                             );
                         }
                     }
-                    inflight.lock().await.remove(&key);
                 }
             });
         }

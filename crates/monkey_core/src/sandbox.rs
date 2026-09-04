@@ -161,12 +161,12 @@ mod tests {
     use super::*;
     use std::fs;
 
-    async fn run_test_git(repo: &Path, args: &[&str]) {
+    async fn run_test_git(repo: &Path, args: &[&str]) -> String {
         let mut all_args = vec!["-C", repo.to_str().expect("test repo path is UTF-8")];
         all_args.extend_from_slice(args);
         run_git_cmd(&all_args)
             .await
-            .expect("test git command must succeed");
+            .expect("test git command must succeed")
     }
 
     async fn commit_file(repo: &Path, file: &str, contents: &str, message: &str) {

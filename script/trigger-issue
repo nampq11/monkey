@@ -48,4 +48,5 @@ curl -s -i -X POST http://localhost:8000/webhook/github \
 
 echo ""
 echo "Event sent! Follow progress with:"
-echo "  docker compose logs -f monkey-orchestrator"
+echo "  docker compose logs -f monkey"
+echo "  (hoặc: docker logs -f monkey-orchestrator)"

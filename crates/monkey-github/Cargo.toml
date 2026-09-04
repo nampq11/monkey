@@ -13,9 +13,7 @@ monkey-core = { workspace = true }
 monkey-engine = { workspace = true }
 axum = { workspace = true }
 reqwest = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
-hmac = { workspace = true }
-sha2 = { workspace = true }
-hex = { workspace = true }
 regex = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }

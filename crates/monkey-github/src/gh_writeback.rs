@@ -2,7 +2,7 @@ use regex::Regex;
 use serde_json::{Value, json};
 use std::path::Path;
 
-use crate::host_tools::GHProxy;
+use crate::host_tools::{GHProxy, GhProxyError};
 use monkey_core::config::Settings;
 use monkey_core::db::Store;
 use monkey_core::dispatch::TaskKind;
@@ -31,13 +31,13 @@ pub async fn write_back(
     store: &Store,
     worktree: &Path,
     settings: &Settings,
-) -> Result<Value, String> {
+) -> Result<Value, GhProxyError> {
     let proxy = GHProxy::new(
         &settings.gh_proxy_url,
         &settings.gh_proxy_hmac_key,
         store.clone(),
         repo_ref,
-    );
+    )?;
 
     match kind {
         TaskKind::Fix => open_pr_if_gated(&proxy, outcome, repo_ref, worktree).await,
@@ -59,7 +59,7 @@ pub async fn open_pr_if_gated(
     outcome: &Outcome,
     repo_ref: &RepoRef,
     worktree: &Path,
-) -> Result<Value, String> {
+) -> Result<Value, GhProxyError> {
     let body = if !outcome.pr_body.is_empty() {
         &outcome.pr_body
     } else {

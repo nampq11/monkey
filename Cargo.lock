@@ -807,6 +807,7 @@ dependencies = [
  "monkey-github",
  "serde_json",
  "tempfile",
+ "thiserror",
  "tokio",
  "tower",
  "tracing",
@@ -826,6 +827,7 @@ dependencies = [
  "sha2",
  "subtle",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -835,8 +837,10 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
+ "thiserror",
  "tokio",
  "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -844,15 +848,13 @@ name = "monkey-github"
 version = "0.1.0"
 dependencies = [
  "axum",
- "hex",
- "hmac",
  "monkey-core",
  "monkey-engine",
  "regex",
  "reqwest",
- "serde",
  "serde_json",
- "sha2",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

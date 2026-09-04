@@ -11,7 +11,7 @@ const HMAC_KEY: &str = "test-gh-proxy-hmac";
 const TOKEN: &str = "test-gh-proxy-token";
 
 fn test_app() -> axum::Router {
-    let state = GhProxyState::new(TOKEN.to_string(), HMAC_KEY.to_string());
+    let state = GhProxyState::new(TOKEN.to_string(), HMAC_KEY.to_string()).unwrap();
     app(state)
 }
 

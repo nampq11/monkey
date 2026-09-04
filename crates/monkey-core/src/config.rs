@@ -1,4 +1,10 @@
 use std::env;
+use std::sync::OnceLock;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+#[error("{0}")]
+pub struct ConfigError(pub String);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthMode {
@@ -18,9 +24,14 @@ pub struct Settings {
 
     // Scope
     pub repo_allowlist: String,
+    // Parsed once from repo_allowlist on first use; the webhook hot path
+    // must not re-split and re-allocate the CSV on every request.
+    pub allowlist_cache: OnceLock<Vec<String>>,
 
     // Engine (pi)
     pub model: String,
+    // Parsed once from model on first use, same reason as allowlist_cache.
+    pub models_cache: OnceLock<Vec<String>>,
     pub thinking: String,
     pub provider: String,
     pub session_dir: String,
@@ -45,7 +56,7 @@ pub struct Settings {
 }
 
 impl Settings {
-    pub fn load_from_env() -> Result<Self, String> {
+    pub fn load_from_env() -> Result<Self, ConfigError> {
         let get_env = |keys: &[&str]| -> String {
             for key in keys {
                 if let Ok(val) = env::var(key) {
@@ -109,7 +120,9 @@ impl Settings {
             git_author_name,
             git_author_email,
             repo_allowlist,
+            allowlist_cache: OnceLock::new(),
             model,
+            models_cache: OnceLock::new(),
             thinking,
             provider,
             session_dir,
@@ -127,49 +140,53 @@ impl Settings {
         Ok(settings)
     }
 
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), ConfigError> {
         let has_proxy = !self.gh_proxy_url.is_empty() || !self.gh_proxy_hmac_key.is_empty();
         let has_pat = !self.github_token.is_empty();
 
         if has_proxy && has_pat {
-            return Err("set either gh-proxy (URL + HMAC key) OR GITHUB_TOKEN, not both".into());
+            return Err(ConfigError(
+                "set either gh-proxy (URL + HMAC key) OR GITHUB_TOKEN, not both".into(),
+            ));
         }
         if !has_proxy && !has_pat {
-            return Err("must set gh-proxy (URL + HMAC key) OR GITHUB_TOKEN".into());
+            return Err(ConfigError(
+                "must set gh-proxy (URL + HMAC key) OR GITHUB_TOKEN".into(),
+            ));
         }
         if has_proxy && (self.gh_proxy_url.is_empty() || self.gh_proxy_hmac_key.is_empty()) {
-            return Err("gh-proxy mode needs both GH_PROXY_URL and GH_PROXY_HMAC_KEY".into());
+            return Err(ConfigError(
+                "gh-proxy mode needs both GH_PROXY_URL and GH_PROXY_HMAC_KEY".into(),
+            ));
         }
 
         if self.github_webhook_secret.is_empty() {
-            return Err("GITHUB_WEBHOOK_SECRET is required".into());
+            return Err(ConfigError("GITHUB_WEBHOOK_SECRET is required".into()));
         }
         if self.bot_login.is_empty() {
-            return Err("ROBOMP_BOT_LOGIN / MONKEY_BOT_LOGIN is required".into());
+            return Err(ConfigError(
+                "ROBOMP_BOT_LOGIN / MONKEY_BOT_LOGIN is required".into(),
+            ));
         }
         if self.repo_allowlist.is_empty() {
-            return Err("REPO_ALLOWLIST is required".into());
+            return Err(ConfigError("REPO_ALLOWLIST is required".into()));
         }
         if self.max_concurrency == 0 {
-            return Err("MONKEY_MAX_CONCURRENCY must be greater than zero".into());
+            return Err(ConfigError(
+                "MONKEY_MAX_CONCURRENCY must be greater than zero".into(),
+            ));
         }
 
         Ok(())
     }
 
-    pub fn allowlist(&self) -> Vec<String> {
-        self.split_csv(&self.repo_allowlist)
+    pub fn allowlist(&self) -> &[String] {
+        self.allowlist_cache
+            .get_or_init(|| split_csv(&self.repo_allowlist))
     }
 
-    pub fn models(&self) -> Vec<String> {
-        self.split_csv(&self.model)
-    }
-
-    fn split_csv(&self, raw: &str) -> Vec<String> {
-        raw.split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect()
+    pub fn models(&self) -> &[String] {
+        self.models_cache.get_or_init(|| split_csv(&self.model))
     }
 
     pub fn auth_mode(&self) -> AuthMode {
@@ -179,4 +196,11 @@ impl Settings {
             AuthMode::Pat
         }
     }
+}
+
+fn split_csv(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|entry| entry.trim().to_string())
+        .filter(|entry| !entry.is_empty())
+        .collect()
 }

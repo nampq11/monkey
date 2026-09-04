@@ -11,7 +11,7 @@ use monkey_core::config::Settings;
 use monkey_core::db::Store;
 use monkey_core::hmac_auth::verify_github_signature;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct WebhookState {
     pub settings: Settings,
     pub store: Store,
@@ -31,10 +31,10 @@ async fn healthz() -> Json<Value> {
 async fn github_webhook(
     State(state): State<WebhookState>,
     headers: HeaderMap,
-    req: Request,
+    request: Request,
 ) -> Response {
-    let body = match axum::body::to_bytes(req.into_body(), 10 * 1024 * 1024).await {
-        Ok(b) => b,
+    let body = match axum::body::to_bytes(request.into_body(), 10 * 1024 * 1024).await {
+        Ok(body) => body,
         Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -46,7 +46,7 @@ async fn github_webhook(
 
     let signature = headers
         .get("x-hub-signature-256")
-        .and_then(|v| v.to_str().ok());
+        .and_then(|value| value.to_str().ok());
 
     if verify_github_signature(&state.settings.github_webhook_secret, &body, signature).is_err() {
         return (
@@ -58,9 +58,9 @@ async fn github_webhook(
 
     let delivery_id = match headers
         .get("x-github-delivery")
-        .and_then(|v| v.to_str().ok())
+        .and_then(|value| value.to_str().ok())
     {
-        Some(d) if !d.is_empty() => d,
+        Some(delivery) if !delivery.is_empty() => delivery,
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -72,11 +72,11 @@ async fn github_webhook(
 
     let event_type = headers
         .get("x-github-event")
-        .and_then(|v| v.to_str().ok())
+        .and_then(|value| value.to_str().ok())
         .unwrap_or("");
 
     let payload: Value = match serde_json::from_slice(&body) {
-        Ok(v) => v,
+        Ok(value) => value,
         Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -87,7 +87,7 @@ async fn github_webhook(
     };
 
     let (owner, repo, number) = match parse_target(event_type, &payload) {
-        (Some(o), Some(r), Some(n)) => (o, r, n),
+        (Some(owner), Some(repo), Some(number)) => (owner, repo, number),
         _ => {
             return (
                 StatusCode::OK,
@@ -133,20 +133,20 @@ async fn github_webhook(
     }
 
     let body_str = String::from_utf8_lossy(&body);
-    let is_new =
-        match state
-            .store
-            .enqueue(delivery_id, event_type, &owner, &repo, number, &body_str)
-        {
-            Ok(inserted) => inserted,
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "detail": format!("database error: {}", e) })),
-                )
-                    .into_response();
-            }
-        };
+    let is_new = match state
+        .store
+        .enqueue(delivery_id, event_type, &owner, &repo, number, &body_str)
+        .await
+    {
+        Ok(inserted) => inserted,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "detail": format!("database error: {}", error) })),
+            )
+                .into_response();
+        }
+    };
 
     (StatusCode::OK, Json(json!({ "ok": true, "new": is_new }))).into_response()
 }
@@ -162,27 +162,31 @@ pub fn parse_target(
         return (None, None, None);
     }
 
-    let repo_obj = match payload.get("repository") {
-        Some(r) => r,
+    let repo_object = match payload.get("repository") {
+        Some(repo_object) => repo_object,
         None => return (None, None, None),
     };
-    let owner = repo_obj
+    let owner = repo_object
         .get("owner")
-        .and_then(|o| o.get("login").or_else(|| o.get("name")))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .and_then(|owner_object| {
+            owner_object
+                .get("login")
+                .or_else(|| owner_object.get("name"))
+        })
+        .and_then(|login| login.as_str())
+        .map(str::to_string);
 
-    let repo = repo_obj
+    let repo = repo_object
         .get("name")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .and_then(|name| name.as_str())
+        .map(str::to_string);
 
     let number = payload
         .get("issue")
         .or_else(|| payload.get("pull_request"))
         .or_else(|| payload.get("review"))
         .and_then(|item| item.get("number"))
-        .and_then(|n| n.as_i64());
+        .and_then(|number_value| number_value.as_i64());
 
     (owner, repo, number)
 }

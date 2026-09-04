@@ -76,7 +76,7 @@ async fn test_open_pr_requires_a_real_branch() {
         repo: "widget".into(),
         number: 123,
     };
-    let proxy = GHProxy::new(&format!("http://{}", address), "key", store, &repo_ref);
+    let proxy = GHProxy::new(&format!("http://{}", address), "key", store, &repo_ref).unwrap();
 
     let outcome = Outcome {
         pr_body: GOOD_BODY.to_string(),
@@ -142,7 +142,7 @@ async fn test_open_pr_pushes_branch_then_opens() {
         repo: "widget".into(),
         number: 123,
     };
-    let proxy = GHProxy::new(&format!("http://{}", addr), "key", store, &repo_ref);
+    let proxy = GHProxy::new(&format!("http://{}", addr), "key", store, &repo_ref).unwrap();
 
     let branch = "farm/abc1234/widget";
     let summary = format!("{}é", "a".repeat(119));

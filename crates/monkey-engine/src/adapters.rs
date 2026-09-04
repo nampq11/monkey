@@ -2,8 +2,27 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use thiserror::Error;
 
 pub mod pi;
+
+#[derive(Debug, Error)]
+pub enum EngineError {
+    #[error("I/O failure: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("failed to spawn pi binary `{binary}`: {source}")]
+    Spawn {
+        binary: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("RPC framing error: {0}")]
+    Framing(String),
+    #[error("pi exited before {0}")]
+    PrematureExit(String),
+    #[error("timed out waiting for {0}")]
+    Timeout(String),
+}
 
 #[derive(Debug, Clone)]
 pub struct RunParams<'a> {
@@ -47,12 +66,12 @@ pub trait EngineAdapter: Send + Sync {
     fn run(
         &self,
         params: RunParams<'_>,
-    ) -> impl std::future::Future<Output = Result<Outcome, String>> + Send;
+    ) -> impl std::future::Future<Output = Result<Outcome, EngineError>> + Send;
 
     fn resume(
         &self,
         params: RunParams<'_>,
-    ) -> impl std::future::Future<Output = Result<Outcome, String>> + Send;
+    ) -> impl std::future::Future<Output = Result<Outcome, EngineError>> + Send;
 
     fn session_artifacts(&self, session_dir: &Path) -> Value;
 }

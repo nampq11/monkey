@@ -6,6 +6,7 @@ use monkey::db::Store;
 use monkey::hmac_auth::hmac_sign;
 use monkey::webhook::{WebhookState, app};
 use serde_json::json;
+use std::sync::OnceLock;
 use tempfile::tempdir;
 use tower::ServiceExt;
 
@@ -22,7 +23,9 @@ fn setup_webhook_app() -> (axum::Router, Store, tempfile::TempDir) {
         git_author_name: "monkey".to_string(),
         git_author_email: "monkey@example.com".to_string(),
         repo_allowlist: "acme/widget,foo/bar".to_string(),
+        allowlist_cache: OnceLock::new(),
         model: "".to_string(),
+        models_cache: OnceLock::new(),
         thinking: "medium".to_string(),
         provider: "".to_string(),
         session_dir: "/data/sessions".to_string(),
@@ -110,7 +113,7 @@ async fn test_webhook_valid_signature_enqueues_event() {
     assert_eq!(json["ok"], true);
     assert_eq!(json["new"], true);
 
-    let pending = store.get_pending(10).unwrap();
+    let pending = store.pending_events(10).await.unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].delivery_id, "d-12345");
     assert_eq!(pending[0].owner, "acme");
@@ -140,7 +143,7 @@ async fn test_webhook_skips_configured_bot_sender() {
 
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(store.get_pending(10).unwrap().is_empty());
+    assert!(store.pending_events(10).await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -165,5 +168,5 @@ async fn test_webhook_skips_github_bot_sender() {
 
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(store.get_pending(10).unwrap().is_empty());
+    assert!(store.pending_events(10).await.unwrap().is_empty());
 }

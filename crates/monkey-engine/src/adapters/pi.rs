@@ -4,21 +4,14 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 use tokio_util::codec::{FramedRead, LinesCodec};
 
-use super::{EngineAdapter, Outcome, RunParams};
+use super::{EngineAdapter, EngineError, Outcome, RunParams};
 
+#[derive(Debug, Clone, Default)]
 pub struct PiAdapter {
     pub binary: String,
-}
-
-impl Default for PiAdapter {
-    fn default() -> Self {
-        Self {
-            binary: "pi".to_string(),
-        }
-    }
 }
 
 impl PiAdapter {
@@ -30,15 +23,13 @@ impl PiAdapter {
 }
 
 impl EngineAdapter for PiAdapter {
-    async fn run(&self, params: RunParams<'_>) -> Result<Outcome, String> {
-        tokio::fs::create_dir_all(params.session_dir)
-            .await
-            .map_err(|e| format!("failed to create session dir: {}", e))?;
+    async fn run(&self, params: RunParams<'_>) -> Result<Outcome, EngineError> {
+        tokio::fs::create_dir_all(params.session_dir).await?;
 
         drive_rpc_session(&self.binary, &params, None).await
     }
 
-    async fn resume(&self, params: RunParams<'_>) -> Result<Outcome, String> {
+    async fn resume(&self, params: RunParams<'_>) -> Result<Outcome, EngineError> {
         drive_rpc_session(&self.binary, &params, find_session_file(params.session_dir)).await
     }
 
@@ -60,11 +51,31 @@ async fn drive_rpc_session(
     binary: &str,
     params: &RunParams<'_>,
     switch_to: Option<PathBuf>,
-) -> Result<Outcome, String> {
+) -> Result<Outcome, EngineError> {
     let mut child = spawn_pi(binary, params)?;
 
-    let mut stdin = child.stdin.take().ok_or("failed to open stdin")?;
-    let stdout = child.stdout.take().ok_or("failed to open stdout")?;
+    let outcome = drive_protocol(&mut child, params, switch_to).await;
+    // Reap on every path (success or failure): kill() alone leaves the child
+    // in the process table as a zombie until it is waited on, which exhausts
+    // PIDs in a long-lived container.
+    shutdown_child(&mut child).await;
+
+    outcome
+}
+
+async fn drive_protocol(
+    child: &mut Child,
+    params: &RunParams<'_>,
+    switch_to: Option<PathBuf>,
+) -> Result<Outcome, EngineError> {
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| EngineError::Framing("failed to open stdin".into()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| EngineError::Framing("failed to open stdout".into()))?;
     let mut lines = FramedRead::new(stdout, LinesCodec::new());
 
     if let Some(path) = switch_to {
@@ -94,8 +105,6 @@ async fn drive_rpc_session(
     let text_resp =
         rpc_request(&mut stdin, &mut lines, "get_last_assistant_text", "text-1").await?;
 
-    let _ = child.kill().await;
-
     build_outcome(
         params.worktree,
         params.session_dir,
@@ -106,14 +115,28 @@ async fn drive_rpc_session(
     .await
 }
 
+// kill() may report an error when the child already exited (the normal case
+// after a successful session); wait() is what actually reaps it.
+async fn shutdown_child(child: &mut Child) {
+    if let Err(error) = child.kill().await {
+        tracing::debug!(
+            "pi child kill returned an error (likely already exited): {}",
+            error
+        );
+    }
+    if let Err(error) = child.wait().await {
+        tracing::warn!("failed to reap pi child process: {}", error);
+    }
+}
+
 async fn rpc_request(
     stdin: &mut tokio::process::ChildStdin,
     lines: &mut FramedRead<tokio::process::ChildStdout, LinesCodec>,
     request_type: &str,
-    req_id: &str,
-) -> Result<Value, String> {
-    send_line(stdin, &json!({ "type": request_type, "id": req_id })).await?;
-    wait_for_response(lines, req_id, Duration::from_secs(10)).await
+    request_id: &str,
+) -> Result<Value, EngineError> {
+    send_line(stdin, &json!({ "type": request_type, "id": request_id })).await?;
+    wait_for_response(lines, request_id, Duration::from_secs(10)).await
 }
 
 // build_outcome is the "collect stats, read branch, classify output" tail
@@ -124,11 +147,11 @@ async fn build_outcome(
     raw_events: Vec<Value>,
     stats_resp: &Value,
     text_resp: &Value,
-) -> Result<Outcome, String> {
+) -> Result<Outcome, EngineError> {
     let stats_data = stats_resp
         .get("data")
         .and_then(Value::as_object)
-        .ok_or("pi stats response missing data object")?;
+        .ok_or_else(|| EngineError::Framing("pi stats response missing data object".into()))?;
     let session_file = stats_data
         .get("sessionFile")
         .and_then(|session_file| session_file.as_str())
@@ -137,11 +160,11 @@ async fn build_outcome(
     let text_data = text_resp
         .get("data")
         .and_then(Value::as_object)
-        .ok_or("pi text response missing data object")?;
+        .ok_or_else(|| EngineError::Framing("pi text response missing data object".into()))?;
     let last_text = text_data
         .get("text")
         .and_then(|text| text.as_str())
-        .ok_or("pi text response missing data.text")?
+        .ok_or_else(|| EngineError::Framing("pi text response missing data.text".into()))?
         .to_string();
 
     let branch = read_branch(worktree).await;
@@ -170,7 +193,7 @@ async fn build_outcome(
     Ok(outcome)
 }
 
-fn spawn_pi(binary: &str, params: &RunParams<'_>) -> Result<tokio::process::Child, String> {
+fn spawn_pi(binary: &str, params: &RunParams<'_>) -> Result<Child, EngineError> {
     let mut cmd = Command::new(binary);
     cmd.arg("--mode").arg("rpc");
     cmd.arg("--session-dir").arg(params.session_dir);
@@ -191,26 +214,24 @@ fn spawn_pi(binary: &str, params: &RunParams<'_>) -> Result<tokio::process::Chil
     cmd.kill_on_drop(true);
 
     // Keep internal configuration and GitHub credentials out of prompt-injected code.
-    for (k, _) in std::env::vars() {
-        if k.starts_with("GITHUB_") || k.starts_with("MONKEY_") {
-            cmd.env_remove(&k);
+    for (env_key, _) in std::env::vars() {
+        if env_key.starts_with("GITHUB_") || env_key.starts_with("MONKEY_") {
+            cmd.env_remove(&env_key);
         }
     }
 
-    cmd.spawn()
-        .map_err(|e| format!("failed to spawn pi ({}): {}", binary, e))
+    cmd.spawn().map_err(|source| EngineError::Spawn {
+        binary: binary.to_string(),
+        source,
+    })
 }
 
-async fn send_line(stdin: &mut tokio::process::ChildStdin, obj: &Value) -> Result<(), String> {
-    let line = serde_json::to_string(obj).map_err(|e| e.to_string())? + "\n";
-    stdin
-        .write_all(line.as_bytes())
-        .await
-        .map_err(|e| format!("failed to write to child stdin: {}", e))?;
-    stdin
-        .flush()
-        .await
-        .map_err(|e| format!("failed to flush child stdin: {}", e))?;
+async fn send_line(stdin: &mut tokio::process::ChildStdin, obj: &Value) -> Result<(), EngineError> {
+    let line = serde_json::to_string(obj).map_err(|error| {
+        EngineError::Framing(format!("failed to serialize pi request: {error}"))
+    })? + "\n";
+    stdin.write_all(line.as_bytes()).await?;
+    stdin.flush().await?;
     Ok(())
 }
 
@@ -218,7 +239,7 @@ async fn drain_until_settled(
     lines: &mut FramedRead<tokio::process::ChildStdout, LinesCodec>,
     raw_events: &mut Vec<Value>,
     timeout: Duration,
-) -> Result<(), String> {
+) -> Result<(), EngineError> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let val = next_json_event(lines, deadline, "agent_settled", "event").await?;
@@ -232,12 +253,16 @@ async fn drain_until_settled(
                         if trimmed.is_empty() {
                             continue;
                         }
-                        let extra_value = serde_json::from_str::<Value>(trimmed)
-                            .map_err(|error| format!("malformed pi event: {}", error))?;
+                        let extra_value =
+                            serde_json::from_str::<Value>(trimmed).map_err(|error| {
+                                EngineError::Framing(format!("malformed pi event: {error}"))
+                            })?;
                         raw_events.push(extra_value);
                     }
                     Ok(Some(Err(error))) => {
-                        return Err(format!("failed reading pi output: {}", error));
+                        return Err(EngineError::Framing(format!(
+                            "failed reading pi output: {error}"
+                        )));
                     }
                     Ok(None) | Err(_) => break,
                 }
@@ -255,39 +280,48 @@ async fn next_json_event(
     deadline: tokio::time::Instant,
     waiting_for: &str,
     parsing: &str,
-) -> Result<Value, String> {
+) -> Result<Value, EngineError> {
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
-            return Err(format!("pi timed out waiting for {waiting_for}"));
+            return Err(EngineError::Timeout(waiting_for.to_string()));
         }
 
         let line = match tokio::time::timeout(remaining, lines.next()).await {
             Ok(Some(Ok(line))) => line,
-            Ok(Some(Err(error))) => return Err(format!("failed reading pi output: {}", error)),
-            Ok(None) => return Err(format!("pi exited before {waiting_for}")),
-            Err(_) => return Err(format!("pi timed out waiting for {waiting_for}")),
+            Ok(Some(Err(error))) => {
+                return Err(EngineError::Framing(format!(
+                    "failed reading pi output: {error}"
+                )));
+            }
+            Ok(None) => return Err(EngineError::PrematureExit(waiting_for.to_string())),
+            Err(_) => return Err(EngineError::Timeout(waiting_for.to_string())),
         };
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
         return serde_json::from_str(trimmed)
-            .map_err(|error| format!("malformed pi {parsing}: {}", error));
+            .map_err(|error| EngineError::Framing(format!("malformed pi {parsing}: {error}")));
     }
 }
 
 async fn wait_for_response(
     lines: &mut FramedRead<tokio::process::ChildStdout, LinesCodec>,
-    req_id: &str,
+    request_id: &str,
     timeout: Duration,
-) -> Result<Value, String> {
+) -> Result<Value, EngineError> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        let val =
-            next_json_event(lines, deadline, &format!("response {req_id}"), "response").await?;
+        let val = next_json_event(
+            lines,
+            deadline,
+            &format!("response {request_id}"),
+            "response",
+        )
+        .await?;
         if val.get("type").and_then(|value| value.as_str()) == Some("response")
-            && val.get("id").and_then(|value| value.as_str()) == Some(req_id)
+            && val.get("id").and_then(|value| value.as_str()) == Some(request_id)
         {
             return Ok(val);
         }
@@ -305,7 +339,7 @@ pub fn looks_like_pr_body(text: &str) -> bool {
     }
     let count = REPORT_SECTIONS
         .iter()
-        .filter(|&&s| text.contains(s))
+        .filter(|&&section| text.contains(section))
         .count();
     count >= 2
 }
@@ -315,7 +349,7 @@ pub fn find_session_file(session_dir: &Path) -> Option<PathBuf> {
     if let Ok(entries) = std::fs::read_dir(session_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
                 files.push(path);
             }
         }

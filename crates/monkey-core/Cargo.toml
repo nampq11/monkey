@@ -18,3 +18,4 @@ hex = { workspace = true }
 subtle = { workspace = true }
 thiserror = { workspace = true }
 regex = { workspace = true }
+tokio = { workspace = true }

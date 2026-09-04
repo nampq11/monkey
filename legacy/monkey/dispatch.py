@@ -1,4 +1,4 @@
-"""Disptach: classify a GitHub event and build the prompt for the engine.
+"""Dispatch: classify a GitHub event and build the prompt for the engine.
 
 Mirrors roboomp's branching:
   - bug / documentation -> reproduce, fix on a fresh branch, open a PR whose body

@@ -39,7 +39,7 @@ async fn test_push_builds_the_right_request() {
         repo: "widget".into(),
         number: 123,
     };
-    let proxy = GHProxy::new(&format!("http://{}", addr), "key", store, &repo_ref);
+    let proxy = GHProxy::new(&format!("http://{}", addr), "key", store, &repo_ref).unwrap();
 
     let result = proxy
         .push(std::path::Path::new("/data/wt"), "farm/abc1234/widget")

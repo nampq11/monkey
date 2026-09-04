@@ -8,7 +8,7 @@ use axum::{
     routing::{get, patch, post},
 };
 use serde_json::{Value, json};
-use std::process::Command;
+use tokio::process::Command;
 
 use monkey_core::hmac_auth::verify_internal_signature;
 
@@ -16,7 +16,7 @@ const API: &str = "https://api.github.com";
 const CREDENTIAL_HELPER: &str =
     "!f() { echo username=x-access-token; echo password=$GIT_TOKEN; }; f";
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct GhProxyState {
     pub github_token: String,
     pub hmac_key: String,
@@ -24,15 +24,16 @@ pub struct GhProxyState {
 }
 
 impl GhProxyState {
-    pub fn new(github_token: String, hmac_key: String) -> Self {
-        Self {
+    pub fn new(github_token: String, hmac_key: String) -> Result<Self, reqwest::Error> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?;
+
+        Ok(Self {
             github_token,
             hmac_key,
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_default(),
-        }
+            client,
+        })
     }
 }
 
@@ -61,14 +62,14 @@ async fn healthz() -> Json<Value> {
     Json(json!({ "ok": true }))
 }
 
-async fn hmac_gate(State(state): State<GhProxyState>, req: Request, next: Next) -> Response {
-    if req.uri().path() == "/healthz" {
-        return next.run(req).await;
+async fn hmac_gate(State(state): State<GhProxyState>, request: Request, next: Next) -> Response {
+    if request.uri().path() == "/healthz" {
+        return next.run(request).await;
     }
 
-    let (parts, body) = req.into_parts();
-    let bytes = match axum::body::to_bytes(body, 10 * 1024 * 1024).await {
-        Ok(b) => b,
+    let (parts, body) = request.into_parts();
+    let body_bytes = match axum::body::to_bytes(body, 10 * 1024 * 1024).await {
+        Ok(bytes) => bytes,
         Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -78,16 +79,16 @@ async fn hmac_gate(State(state): State<GhProxyState>, req: Request, next: Next) 
         }
     };
 
-    let sig = parts
+    let signature = parts
         .headers
         .get("x-monkey-sig")
         .and_then(|v| v.to_str().ok());
-    let ts = parts
+    let timestamp = parts
         .headers
         .get("x-monkey-ts")
         .and_then(|v| v.to_str().ok());
 
-    if verify_internal_signature(&state.hmac_key, &bytes, sig, ts, 30).is_err() {
+    if verify_internal_signature(&state.hmac_key, &body_bytes, signature, timestamp, 30).is_err() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({ "detail": "bad signature" })),
@@ -95,8 +96,8 @@ async fn hmac_gate(State(state): State<GhProxyState>, req: Request, next: Next) 
             .into_response();
     }
 
-    let req = Request::from_parts(parts, Body::from(bytes));
-    next.run(req).await
+    let request = Request::from_parts(parts, Body::from(body_bytes));
+    next.run(request).await
 }
 
 async fn add_issue_comment(
@@ -213,7 +214,8 @@ async fn git_push(State(state): State<GhProxyState>, Json(body): Json<Value>) ->
         ])
         .env("GIT_TOKEN", &state.github_token)
         .env("GIT_TERMINAL_PROMPT", "0")
-        .output();
+        .output()
+        .await;
 
     match output {
         Ok(out) if out.status.success() => {
@@ -231,11 +233,11 @@ async fn git_push(State(state): State<GhProxyState>, Json(body): Json<Value>) ->
             )
                 .into_response()
         }
-        Err(e) => (
+        Err(error) => (
             StatusCode::BAD_GATEWAY,
             Json(json!({
                 "detail": "failed to spawn git",
-                "error": e.to_string()
+                "error": error.to_string()
             })),
         )
             .into_response(),
@@ -249,7 +251,7 @@ async fn call_gh(
     body: Option<Value>,
 ) -> Response {
     let url = format!("{}{}", API, path);
-    let mut req = state
+    let mut request = state
         .client
         .request(method, &url)
         .header(
@@ -261,31 +263,31 @@ async fn call_gh(
         .header(header::USER_AGENT, "monkey-gh-proxy");
 
     if let Some(json_body) = body {
-        req = req.json(&json_body);
+        request = request.json(&json_body);
     }
 
-    match req.send().await {
-        Ok(resp) => {
-            let status = StatusCode::from_u16(resp.status().as_u16())
+    match request.send().await {
+        Ok(response) => {
+            let status = StatusCode::from_u16(response.status().as_u16())
                 .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             let upstream_failed = status.is_client_error() || status.is_server_error();
-            let response_text = match resp.text().await {
+            let response_text = match response.text().await {
                 Ok(text) => text,
-                Err(error) => {
+                Err(read_error) => {
                     return github_error_response(
                         upstream_failed,
                         status,
-                        format!("failed to read GitHub response: {}", error),
+                        format!("failed to read GitHub response: {}", read_error),
                     );
                 }
             };
             let parsed_json = match serde_json::from_str::<Value>(&response_text) {
                 Ok(value) => value,
-                Err(error) => {
+                Err(decode_error) => {
                     return github_error_response(
                         upstream_failed,
                         status,
-                        format!("malformed GitHub JSON response: {}", error),
+                        format!("malformed GitHub JSON response: {}", decode_error),
                     );
                 }
             };
@@ -304,10 +306,10 @@ async fn call_gh(
                 (status, Json(parsed_json)).into_response()
             }
         }
-        Err(e) => (
+        Err(error) => (
             StatusCode::BAD_GATEWAY,
             Json(json!({
-                "detail": format!("upstream error: {}", e)
+                "detail": format!("upstream error: {}", error)
             })),
         )
             .into_response(),

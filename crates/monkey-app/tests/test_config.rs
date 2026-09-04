@@ -1,4 +1,5 @@
 use monkey::config::{AuthMode, Settings};
+use std::sync::OnceLock;
 
 fn base_settings() -> Settings {
     Settings {
@@ -7,7 +8,9 @@ fn base_settings() -> Settings {
         git_author_name: "monkey".to_string(),
         git_author_email: "monkey@example.com".to_string(),
         repo_allowlist: "acme/widget".to_string(),
+        allowlist_cache: OnceLock::new(),
         model: "m1,m2".to_string(),
+        models_cache: OnceLock::new(),
         thinking: "medium".to_string(),
         provider: "".to_string(),
         session_dir: "/data/sessions".to_string(),
@@ -27,8 +30,8 @@ fn test_valid_proxy_mode() {
     let s = base_settings();
     assert!(s.validate().is_ok());
     assert_eq!(s.auth_mode(), AuthMode::Proxy);
-    assert_eq!(s.allowlist(), vec!["acme/widget"]);
-    assert_eq!(s.models(), vec!["m1", "m2"]);
+    assert_eq!(s.allowlist().to_vec(), vec!["acme/widget"]);
+    assert_eq!(s.models().to_vec(), vec!["m1", "m2"]);
 }
 
 #[test]

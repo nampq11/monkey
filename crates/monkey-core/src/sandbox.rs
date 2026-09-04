@@ -1,9 +1,9 @@
 use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::LazyLock;
 use thiserror::Error;
+use tokio::process::Command;
 
 #[derive(Debug, Error)]
 pub enum SandboxError {
@@ -35,7 +35,7 @@ pub fn farm_dir(owner: &str, repo: &str, number: i64) -> String {
     hex_digest[..8].to_string()
 }
 
-pub fn ensure_workspace(
+pub async fn ensure_workspace(
     workspaces_root: &Path,
     repo_url: &str,
     owner: &str,
@@ -60,12 +60,14 @@ pub fn ensure_workspace(
         ));
     };
     if !mirror.exists() {
-        run_git_cmd(&["clone", "--mirror", repo_url, mirror_str])?;
+        // Cloning a large mirror can take minutes; the async git command keeps
+        // the Tokio worker free while git runs.
+        run_git_cmd(&["clone", "--mirror", repo_url, mirror_str]).await?;
     }
 
     // Base branch off refs/heads/<default_branch>
     let default_ref = format!("refs/heads/{}", default_branch);
-    run_git_cmd(&["-C", mirror_str, "branch", "-f", &branch, &default_ref])?;
+    run_git_cmd(&["-C", mirror_str, "branch", "-f", &branch, &default_ref]).await?;
 
     std::fs::create_dir_all(&base).map_err(|e| SandboxError::Io(e.to_string()))?;
     run_git_cmd(&[
@@ -76,36 +78,57 @@ pub fn ensure_workspace(
         "-f",
         worktree_str,
         &branch,
-    ])?;
+    ])
+    .await?;
 
     Ok(worktree)
 }
 
-pub fn cleanup_workspace(workspaces_root: &Path, owner: &str, repo: &str, number: i64) {
+pub async fn cleanup_workspace(
+    workspaces_root: &Path,
+    owner: &str,
+    repo: &str,
+    number: i64,
+) -> Result<(), SandboxError> {
     let base = workspaces_root.join(format!("{}__{}__{}", owner, repo, number));
     let worktree = base.join("repo");
     let mirror = workspaces_root.join(format!("{}__{}.git", owner, repo));
 
-    if worktree.exists()
-        && let Some(mirror_str) = mirror.to_str()
-        && let Some(worktree_str) = worktree.to_str()
-    {
-        let _ = run_git_cmd(&[
+    if worktree.exists() {
+        let (Some(mirror_str), Some(worktree_str)) = (mirror.to_str(), worktree.to_str()) else {
+            return Err(SandboxError::Io(
+                "workspace path is not valid UTF-8".to_string(),
+            ));
+        };
+        run_git_cmd(&[
             "-C",
             mirror_str,
             "worktree",
             "remove",
             "--force",
             worktree_str,
-        ]);
+        ])
+        .await?;
     }
-    let _ = std::fs::remove_dir_all(&base);
+
+    if base.exists() {
+        std::fs::remove_dir_all(&base).map_err(|error| {
+            SandboxError::Io(format!(
+                "failed to remove workspace {}: {}",
+                base.display(),
+                error
+            ))
+        })?;
+    }
+
+    Ok(())
 }
 
-fn run_git_cmd(args: &[&str]) -> Result<String, SandboxError> {
+async fn run_git_cmd(args: &[&str]) -> Result<String, SandboxError> {
     let output = Command::new("git")
         .args(args)
         .output()
+        .await
         .map_err(|e| SandboxError::CommandFailed(format!("failed to spawn git: {}", e)))?;
 
     if !output.status.success() {

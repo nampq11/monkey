@@ -17,7 +17,7 @@ Self-hosted GitHub triage bot. Drives a coding-agent engine (default: **pi**) pe
                         v
    +----------------------------------------+
    |  monkey (orchestrator)                 |
-   |  FastAPI + SQLite + 1 worker           |
+   |  Axum + SQLite + 1 worker              |
    |  holds HMAC key, NEVER GITHUB_TOKEN    |
    |  spawns pi per issue in a git worktree |
    +-----------------+----------------------+
@@ -46,7 +46,7 @@ Self-hosted GitHub triage bot. Drives a coding-agent engine (default: **pi**) pe
 ## Setup
 
 1. Create a bot GitHub account + fine-grained PAT (Contents, Issues, Pull requests RW + Metadata R).
-2. Point `~/.omp/agent/models.container.yml` at your LiteLLM gateway (the engine routes all LLM calls there).
+2. Configure the pi engine on the host (`~/.pi/agent/models.json` + `~/.pi/agent/auth.json`, mounted read-only into the container by docker-compose).
 3. Copy `.env.example` -> `.env` and fill in required vars.
 4. `docker compose up -d --build`
 5. Add a GitHub webhook to `/webhook/github` for events: Issues, Issue comments, Pull requests, Pull request reviews, Pull request review comments.

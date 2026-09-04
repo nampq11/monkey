@@ -87,9 +87,15 @@ async fn test_open_pr_requires_a_real_branch() {
         ..Default::default()
     };
 
-    let result = open_pr_if_gated(&proxy, &outcome, &repo_ref, std::path::Path::new("/wt"))
-        .await
-        .unwrap();
+    let result = open_pr_if_gated(
+        &proxy,
+        &outcome,
+        &repo_ref,
+        std::path::Path::new("/wt"),
+        "main",
+    )
+    .await
+    .unwrap();
 
     assert_eq!(result["action"], "comment_fallback");
     assert_eq!(result["reason"], "missing_branch");
@@ -155,19 +161,90 @@ async fn test_open_pr_pushes_branch_then_opens() {
         ..Default::default()
     };
 
-    let result = open_pr_if_gated(&proxy, &outcome, &repo_ref, std::path::Path::new("/wt"))
-        .await
-        .unwrap();
+    let result = open_pr_if_gated(
+        &proxy,
+        &outcome,
+        &repo_ref,
+        std::path::Path::new("/wt"),
+        "main",
+    )
+    .await
+    .unwrap();
 
     assert_eq!(result["action"], "open_pr");
     assert_eq!(pushed.lock().unwrap().len(), 1);
     assert_eq!(pushed.lock().unwrap()[0]["branch"], branch);
     assert_eq!(prs.lock().unwrap().len(), 1);
     assert_eq!(prs.lock().unwrap()[0]["head"], branch);
+    assert_eq!(prs.lock().unwrap()[0]["base"], "main");
     assert_eq!(
         prs.lock().unwrap()[0]["title"],
         format!("A{}", "a".repeat(118))
     );
+}
+
+#[tokio::test]
+async fn test_open_pr_uses_non_main_base_branch() {
+    let prs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    let pr_clone = prs.clone();
+    let app = axum::Router::new()
+        .route(
+            "/git/push",
+            axum::routing::post(|| async { axum::Json(serde_json::json!({ "ok": true })) }),
+        )
+        .route(
+            "/pulls/acme/widget",
+            axum::routing::post({
+                let pr = pr_clone.clone();
+                move |axum::Json(body): axum::Json<serde_json::Value>| {
+                    let pr = pr.clone();
+                    async move {
+                        pr.lock().unwrap().push(body);
+                        axum::Json(serde_json::json!({ "number": 1 }))
+                    }
+                }
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let store = Store::new(&db_path).unwrap();
+    let repo_ref = RepoRef {
+        owner: "acme".into(),
+        repo: "widget".into(),
+        number: 123,
+    };
+    let proxy = GHProxy::new(&format!("http://{}", addr), "key", store, &repo_ref).unwrap();
+
+    let branch = "farm/abc1234/widget";
+    let outcome = Outcome {
+        pr_body: GOOD_BODY.to_string(),
+        summary: "Fix the bug".to_string(),
+        branch: branch.to_string(),
+        ..Default::default()
+    };
+
+    let result = open_pr_if_gated(
+        &proxy,
+        &outcome,
+        &repo_ref,
+        std::path::Path::new("/wt"),
+        "master",
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result["action"], "open_pr");
+    assert_eq!(prs.lock().unwrap().len(), 1);
+    assert_eq!(prs.lock().unwrap()[0]["head"], branch);
+    assert_eq!(prs.lock().unwrap()[0]["base"], "master");
 }
 
 #[test]
@@ -336,9 +413,15 @@ async fn test_open_pr_updates_existing_when_already_exists() {
         ..Default::default()
     };
 
-    let result = open_pr_if_gated(&proxy, &outcome, &repo_ref, std::path::Path::new("/wt"))
-        .await
-        .unwrap();
+    let result = open_pr_if_gated(
+        &proxy,
+        &outcome,
+        &repo_ref,
+        std::path::Path::new("/wt"),
+        "main",
+    )
+    .await
+    .unwrap();
 
     assert_eq!(result["action"], "open_pr");
     assert_eq!(result["pr"]["number"], 42);

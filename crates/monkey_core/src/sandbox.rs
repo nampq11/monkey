@@ -219,4 +219,33 @@ mod tests {
             "revision-2\n"
         );
     }
+
+    #[tokio::test]
+    async fn prepares_workspace_for_non_main_default_branch() {
+        let upstream_root = tempfile::tempdir().expect("failed to create upstream tempdir");
+        let upstream = upstream_root.path().join("upstream");
+        run_test_git(upstream_root.path(), &["init", "-b", "master", "upstream"]).await;
+        commit_file(&upstream, "state.txt", "on-master\n", "revision 1").await;
+
+        let workspaces = tempfile::tempdir().expect("failed to create workspaces tempdir");
+        let repo_url = upstream.to_str().expect("upstream path is UTF-8");
+
+        let worktree = ensure_workspace(workspaces.path(), repo_url, "acme", "widgets", 7, "master")
+            .await
+            .expect("workspace preparation for a master-default repository must succeed");
+        assert_eq!(
+            fs::read_to_string(worktree.join("state.txt")).expect("failed to read state file"),
+            "on-master\n"
+        );
+
+        let branch = run_test_git(&worktree, &["rev-parse", "--abbrev-ref", "HEAD"]).await;
+        assert_eq!(
+            branch.trim(),
+            format!(
+                "farm/{}/{}",
+                farm_dir("acme", "widgets", 7),
+                slug("widgets")
+            )
+        );
+    }
 }
